@@ -136,8 +136,10 @@ final class AppleMusicService: AppleMusicServicing {
             let sourceID = album.id.replacingOccurrences(of: "monosync-playlist-album:", with: "")
             let rawID = sourceID.replacingOccurrences(of: "applemusic-playlist:", with: "")
             if let cached = cachedLibraryPlaylists[rawID] {
-                let loaded = try await cached.with(.tracks)
-                songs = loaded.tracks?.compactMap(\.songValue) ?? []
+                songs = try await Task.detached(priority: .userInitiated) { () -> [Song] in
+                    let loaded = try await cached.with(.tracks)
+                    return loaded.tracks?.compactMap(\.songValue) ?? []
+                }.value
             } else {
                 songs = try await AppleMusicLibraryTrackLoader.playlistSongs(sourceID: sourceID)
             }
@@ -216,16 +218,20 @@ final class AppleMusicService: AppleMusicServicing {
     func libraryPlaylists() async throws -> [MusicCollectionSnapshot] {
         try await ensureMusicAccess()
 
-        var request = MusicLibraryRequest<Playlist>()
-        request.limit = 20
-        request.sort(by: \.name, ascending: true)
-        let response = try await request.response()
+        // 라이브러리 요청은 메인 스레드를 붙잡으므로 반드시 메인 액터 밖에서 실행합니다.
+        let items = try await Task.detached(priority: .userInitiated) { () -> [Playlist] in
+            var request = MusicLibraryRequest<Playlist>()
+            request.limit = 20
+            request.sort(by: \.name, ascending: true)
+            let response = try await request.response()
+            return Array(response.items)
+        }.value
 
-        for playlist in response.items {
+        for playlist in items {
             cachedLibraryPlaylists[playlist.id.rawValue] = playlist
         }
 
-        return response.items.map(MusicCollectionSnapshot.init(playlist:))
+        return items.map(MusicCollectionSnapshot.init(playlist:))
     }
 
     func tracks(in playlist: MusicCollectionSnapshot) async throws -> [TrackSnapshot] {
@@ -233,8 +239,10 @@ final class AppleMusicService: AppleMusicServicing {
         let rawID = playlist.sourceID.replacingOccurrences(of: "applemusic-playlist:", with: "")
 
         if let cached = cachedLibraryPlaylists[rawID] {
-            let loaded = try await cached.with(.tracks)
-            let songs = loaded.tracks?.compactMap(\.songValue) ?? []
+            let songs = try await Task.detached(priority: .userInitiated) { () -> [Song] in
+                let loaded = try await cached.with(.tracks)
+                return loaded.tracks?.compactMap(\.songValue) ?? []
+            }.value
             return songs.map(TrackSnapshot.init(song:))
         }
 
@@ -261,10 +269,13 @@ final class AppleMusicService: AppleMusicServicing {
     func recentlyPlayedTracks() async throws -> [TrackSnapshot] {
         try await ensureMusicAccess()
 
-        var request = MusicRecentlyPlayedRequest<Song>()
-        request.limit = 20
-        let response = try await request.response()
-        return response.items.map(TrackSnapshot.init(song:))
+        let items = try await Task.detached(priority: .userInitiated) { () -> [Song] in
+            var request = MusicRecentlyPlayedRequest<Song>()
+            request.limit = 20
+            let response = try await request.response()
+            return Array(response.items)
+        }.value
+        return items.map(TrackSnapshot.init(song:))
     }
 
     func currentSnapshot() -> MusicPlayerSnapshot {
