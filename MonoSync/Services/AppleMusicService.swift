@@ -55,6 +55,7 @@ final class AppleMusicService: AppleMusicServicing {
 
     var authorizationStatus: MusicAuthorization.Status = MusicAuthorization.currentStatus
     var canPlayCatalogContent = true
+    private var cachedLibraryPlaylists: [String: Playlist] = [:]
 
     @discardableResult
     func requestAuthorization() async -> MusicAuthorization.Status {
@@ -130,7 +131,13 @@ final class AppleMusicService: AppleMusicServicing {
         let songs: [Song]
         if album.id.hasPrefix("monosync-playlist-album:") {
             let sourceID = album.id.replacingOccurrences(of: "monosync-playlist-album:", with: "")
-            songs = try await AppleMusicLibraryTrackLoader.playlistSongs(sourceID: sourceID)
+            let rawID = sourceID.replacingOccurrences(of: "applemusic-playlist:", with: "")
+            if let cached = cachedLibraryPlaylists[rawID] {
+                let loaded = try await cached.with(.tracks)
+                songs = loaded.tracks?.compactMap(\.songValue) ?? []
+            } else {
+                songs = try await AppleMusicLibraryTrackLoader.playlistSongs(sourceID: sourceID)
+            }
         } else if album.id.hasPrefix("applemusic-album:") {
             songs = try await AppleMusicLibraryTrackLoader.catalogAlbumSongs(albumID: album.id)
         } else {
@@ -210,11 +217,24 @@ final class AppleMusicService: AppleMusicServicing {
         request.limit = 20
         request.sort(by: \.name, ascending: true)
         let response = try await request.response()
+
+        for playlist in response.items {
+            cachedLibraryPlaylists[playlist.id.rawValue] = playlist
+        }
+
         return response.items.map(MusicCollectionSnapshot.init(playlist:))
     }
 
     func tracks(in playlist: MusicCollectionSnapshot) async throws -> [TrackSnapshot] {
         try await ensureMusicAccess()
+        let rawID = playlist.sourceID.replacingOccurrences(of: "applemusic-playlist:", with: "")
+
+        if let cached = cachedLibraryPlaylists[rawID] {
+            let loaded = try await cached.with(.tracks)
+            let songs = loaded.tracks?.compactMap(\.songValue) ?? []
+            return songs.map(TrackSnapshot.init(song:))
+        }
+
         return try await AppleMusicLibraryTrackLoader.playlistTracks(sourceID: playlist.sourceID)
     }
 
@@ -276,14 +296,6 @@ final class AppleMusicService: AppleMusicServicing {
             let request = MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: MusicItemID(rawID))
             let response = try await request.response()
             if let song = response.items.first {
-                return song
-            }
-        } else {
-            // 라이브러리 곡 ID(l.XXXXX)인 경우 라이브러리에서 직접 조회
-            var libraryRequest = MusicLibraryRequest<Song>()
-            libraryRequest.filter(matching: \.id, equalTo: MusicItemID(rawID))
-            if let response = try? await libraryRequest.response(),
-               let song = response.items.first {
                 return song
             }
         }
