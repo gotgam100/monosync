@@ -21,13 +21,16 @@ struct AlbumSnapshot: Identifiable, Hashable, Sendable {
     var releaseYear: String?
     var artworkURL: URL?
     var tracks: [TrackSnapshot]
+    // 트랙을 모두 로드하지 않아도 곡 수를 표시하기 위한 값(검색 결과 등).
+    var trackCount: Int? = nil
 
     var subtitle: String {
         "\(artistName) · \(albumFactText)"
     }
 
     var albumFactText: String {
-        "\(releaseYear ?? "연도 미상") · \(tracks.count)곡"
+        let count = trackCount ?? tracks.count
+        return "\(releaseYear ?? "연도 미상") · \(count)곡"
     }
 
     static let sample = AlbumSnapshot(

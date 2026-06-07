@@ -173,7 +173,10 @@ final class AppleMusicService: AppleMusicServicing {
             print("[MonoSync] play(album:) 트랙 로딩 완료. songs.count=\(songs.count)")
             #endif
         } else if album.id.hasPrefix("applemusic-album:") {
-            songs = try await AppleMusicLibraryTrackLoader.catalogAlbumSongs(albumID: album.id)
+            songs = try await withMusicTimeout { try await AppleMusicLibraryTrackLoader.catalogAlbumSongs(albumID: album.id) }
+            #if DEBUG
+            print("[MonoSync] play(album:) 카탈로그 앨범 트랙 로딩 완료. songs.count=\(songs.count)")
+            #endif
         } else {
             let tracks = album.tracks
             try await play(tracks: tracks, startIndex: startIndex, startTime: startTime)
@@ -235,40 +238,10 @@ final class AppleMusicService: AppleMusicServicing {
         var searchRequest = MusicCatalogSearchRequest(term: trimmedTerm, types: [Album.self])
         searchRequest.limit = 12
         let response = try await searchRequest.response()
-        let foundAlbums = Array(response.albums)
-        #if DEBUG
-        print("[MonoSync] searchAlbums: \(foundAlbums.count)개 앨범 검색됨, 트랙 로딩 시작")
-        #endif
 
-        // 앨범별 .with(.tracks)를 메인 스레드 밖에서 병렬로, 타임아웃과 함께 실행합니다.
-        // 한 앨범이 응답을 안 줘도 전체가 멈추지 않도록 실패한 앨범은 건너뜁니다.
-        let snapshots: [AlbumSnapshot] = try await Task.detached(priority: .userInitiated) {
-            try await withThrowingTaskGroup(of: AlbumSnapshot?.self) { group in
-                for album in foundAlbums {
-                    group.addTask {
-                        do {
-                            let loaded = try await withMusicTimeout(seconds: 10) { try await album.with(.tracks) }
-                            return AlbumSnapshot(album: loaded)
-                        } catch {
-                            #if DEBUG
-                            print("[MonoSync] searchAlbums: '\(album.title)' 트랙 로딩 실패/타임아웃 →", String(describing: error))
-                            #endif
-                            return nil
-                        }
-                    }
-                }
-                var result: [AlbumSnapshot] = []
-                for try await snapshot in group {
-                    if let snapshot { result.append(snapshot) }
-                }
-                return result
-            }
-        }.value
-
-        #if DEBUG
-        print("[MonoSync] searchAlbums: 트랙 로딩 완료, 최종 \(snapshots.count)개")
-        #endif
-        return snapshots
+        // 검색 목록은 트랙 상세(.with(.tracks))가 필요 없습니다. 곡 수는 trackCount로 표시하고
+        // 실제 트랙은 재생 시점에 로드합니다. 이렇게 해야 검색이 멈추지 않습니다.
+        return response.albums.map { AlbumSnapshot(album: $0, trackCount: $0.trackCount) }
     }
 
     func libraryPlaylists() async throws -> [MusicCollectionSnapshot] {
@@ -490,14 +463,15 @@ private extension TrackSnapshot {
 }
 
 private extension AlbumSnapshot {
-    init(album: Album) {
+    init(album: Album, trackCount: Int? = nil) {
         self.init(
             id: "applemusic-album:\(album.id.rawValue)",
             title: album.title,
             artistName: album.artistName,
             releaseYear: album.releaseDate.map { String(Calendar.current.component(.year, from: $0)) },
             artworkURL: album.artwork?.url(width: 800, height: 800),
-            tracks: album.tracks?.compactMap(TrackSnapshot.init(track:)) ?? []
+            tracks: album.tracks?.compactMap(TrackSnapshot.init(track:)) ?? [],
+            trackCount: trackCount ?? album.tracks?.count
         )
     }
 }
