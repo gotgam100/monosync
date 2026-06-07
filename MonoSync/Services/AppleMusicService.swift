@@ -158,9 +158,7 @@ final class AppleMusicService: AppleMusicServicing {
         if album.id.hasPrefix("monosync-playlist-album:") {
             let sourceID = album.id.replacingOccurrences(of: "monosync-playlist-album:", with: "")
             let rawID = sourceID.replacingOccurrences(of: "applemusic-playlist:", with: "")
-            #if DEBUG
-            print("[MonoSync] play(album:) 플레이리스트 재생 시도. rawID=\(rawID), 캐시히트=\(cachedLibraryPlaylists[rawID] != nil)")
-            #endif
+            NSLog("[MonoSync] play(album:) 플레이리스트 재생 시도. rawID=\(rawID), 캐시히트=\(cachedLibraryPlaylists[rawID] != nil)")
             if let cached = cachedLibraryPlaylists[rawID] {
                 songs = try await withMusicTimeout { () -> [Song] in
                     let loaded = try await cached.with(.tracks)
@@ -169,14 +167,10 @@ final class AppleMusicService: AppleMusicServicing {
             } else {
                 songs = try await withMusicTimeout { try await AppleMusicLibraryTrackLoader.playlistSongs(sourceID: sourceID) }
             }
-            #if DEBUG
-            print("[MonoSync] play(album:) 트랙 로딩 완료. songs.count=\(songs.count)")
-            #endif
+            NSLog("[MonoSync] play(album:) 플레이리스트 트랙 로딩 완료. songs.count=\(songs.count)")
         } else if album.id.hasPrefix("applemusic-album:") {
             songs = try await withMusicTimeout { try await AppleMusicLibraryTrackLoader.catalogAlbumSongs(albumID: album.id) }
-            #if DEBUG
-            print("[MonoSync] play(album:) 카탈로그 앨범 트랙 로딩 완료. songs.count=\(songs.count)")
-            #endif
+            NSLog("[MonoSync] play(album:) 카탈로그 앨범 트랙 로딩 완료. songs.count=\(songs.count)")
         } else {
             let tracks = album.tracks
             try await play(tracks: tracks, startIndex: startIndex, startTime: startTime)

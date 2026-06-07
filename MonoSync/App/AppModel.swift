@@ -223,9 +223,11 @@ final class AppModel {
     @MainActor
     func playSelectedCassetteSide(startingAt track: TrackSnapshot? = nil, startTime: TimeInterval = 0) async {
         guard let album = selectedCassetteAlbum else {
+            NSLog("[MonoSync] ⏹️ playSelectedCassetteSide 중단: \(selectedCassetteSide.title)에 앨범 없음")
             musicStatusText = "\(selectedCassetteSide.title)에 앨범이 없어요"
             return
         }
+        NSLog("[MonoSync] ▶️ playSelectedCassetteSide: album=\(album.title), id=\(album.id), tracks=\(album.tracks.count)")
 
         do {
             let startIndex = track.flatMap { selectedTrack in
@@ -233,6 +235,7 @@ final class AppModel {
             } ?? 0
             musicStatusText = "\(selectedCassetteSide.title) 재생 준비 중"
             let resolvedTracks = try await musicService.play(album: album, startIndex: startIndex, startTime: startTime)
+            NSLog("[MonoSync] ✅ musicService.play(album:) 반환: resolvedTracks=\(resolvedTracks.count)")
             guard !resolvedTracks.isEmpty else {
                 musicStatusText = "\(selectedCassetteSide.title)에 재생할 곡이 없어요"
                 return
@@ -255,9 +258,11 @@ final class AppModel {
             musicStatusText = "\(selectedCassetteSide.title) · \(album.title) 재생 중"
             startPlayerSync()
         } catch let error as AppleMusicPlaybackError {
+            NSLog("[MonoSync] ❌ 카세트 재생 실패(AppleMusicPlaybackError): \(error)")
             isMusicPlaybackActive = false
             musicStatusText = error.errorDescription ?? "카세트 재생 실패"
         } catch {
+            NSLog("[MonoSync] ❌ 카세트 재생 실패(기타): \(String(describing: error))")
             isMusicPlaybackActive = false
             musicStatusText = musicPlaybackFailureMessage(for: error)
         }
@@ -308,6 +313,7 @@ final class AppModel {
 
     @MainActor
     func pressPlayButton() async {
+        NSLog("[MonoSync] ▶️ pressPlayButton: buttons=\(pressedCassetteButtons), selectedCassetteAlbum=\(selectedCassetteAlbum?.title ?? "nil"), currentTrack=\(mySpace.currentTrack?.title ?? "nil")")
         if pressedCassetteButtons.contains(.pause) {
             let position = currentPlaybackPosition()
             pressedCassetteButtons = [.play]
@@ -324,6 +330,7 @@ final class AppModel {
         pressedCassetteButtons = [.play]
 
         if activeCassetteSide != nil || selectedCassetteAlbum != nil {
+            NSLog("[MonoSync] ▶️ → 카세트 재생 경로")
             selectedCassetteSide = activeCassetteSide ?? selectedCassetteSide
             if let currentTrack = mySpace.currentTrack {
                 await playSelectedCassetteSide(
@@ -334,11 +341,13 @@ final class AppModel {
                 await playSelectedCassetteSide()
             }
         } else if mySpace.currentTrack != nil {
+            NSLog("[MonoSync] ▶️ → 단일 트랙 재생 경로")
             if shouldStartFromBeginning {
                 mySpace.positionAtAnchor = 0
             }
             await playCurrentTrack()
         } else {
+            NSLog("[MonoSync] ▶️ → 재생할 게 없어 Apple Music 연결 경로로 빠짐 (카세트/트랙 비어있음)")
             await connectAppleMusic()
         }
     }
