@@ -60,6 +60,9 @@ final class AppleMusicService: AppleMusicServicing {
     @discardableResult
     func requestAuthorization() async -> MusicAuthorization.Status {
         authorizationStatus = await MusicAuthorization.request()
+        if authorizationStatus == .authorized {
+            await refreshSubscription()
+        }
         return authorizationStatus
     }
 
@@ -276,8 +279,15 @@ final class AppleMusicService: AppleMusicServicing {
         do {
             let subscription = try await MusicSubscription.current
             canPlayCatalogContent = subscription.canPlayCatalogContent
+            #if DEBUG
+            print("[MonoSync] 구독 확인: canPlayCatalogContent=\(subscription.canPlayCatalogContent), hasActiveSubscription=\(subscription.canBecomeSubscriber == false)")
+            #endif
         } catch {
+            // -7013 등 계정 접근 실패가 여기서 잡힙니다.
             canPlayCatalogContent = true
+            #if DEBUG
+            print("[MonoSync] 구독 확인 실패(MusicKit 프로비저닝/계정 문제 의심):", String(describing: error))
+            #endif
         }
     }
 
