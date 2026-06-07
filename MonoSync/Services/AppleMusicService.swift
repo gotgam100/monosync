@@ -278,6 +278,14 @@ final class AppleMusicService: AppleMusicServicing {
             if let song = response.items.first {
                 return song
             }
+        } else {
+            // 라이브러리 곡 ID(l.XXXXX)인 경우 라이브러리에서 직접 조회
+            var libraryRequest = MusicLibraryRequest<Song>()
+            libraryRequest.filter(matching: \.id, equalTo: MusicItemID(rawID))
+            if let response = try? await libraryRequest.response(),
+               let song = response.items.first {
+                return song
+            }
         }
 
         var searchRequest = MusicCatalogSearchRequest(
