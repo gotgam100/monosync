@@ -130,13 +130,7 @@ final class AppleMusicService: AppleMusicServicing {
             throw AppleMusicPlaybackError.songNotFound
         }
 
-        let safeStartIndex = min(max(0, startIndex), resolvedSongs.count - 1)
-        player.queue = ApplicationMusicPlayer.Queue(
-            for: resolvedSongs,
-            startingAt: resolvedSongs[safeStartIndex]
-        )
-        player.playbackTime = max(0, startTime)
-        try await player.play()
+        try await playSongsColdSafe(resolvedSongs, startIndex: startIndex, startTime: startTime)
 #endif
     }
 
@@ -180,16 +174,17 @@ final class AppleMusicService: AppleMusicServicing {
             }
 
             let loadedPlaylist = try await withMusicTimeout { try await basePlaylist.with(.tracks) }
-            let tracks = loadedPlaylist.tracks.map(Array.init) ?? []
-            NSLog("[MonoSync] play(album:) 플레이리스트 트랙 \(tracks.count)곡, 컬렉션 통째로 큐잉")
-            guard !tracks.isEmpty else {
+            let libraryTracks = loadedPlaylist.tracks.map(Array.init) ?? []
+            let snapshots = libraryTracks.compactMap(TrackSnapshot.init(track:))
+            NSLog("[MonoSync] play(album:) 플레이리스트 \(snapshots.count)곡을 카탈로그로 변환해 재생")
+            guard !snapshots.isEmpty else {
                 throw AppleMusicPlaybackError.songNotFound
             }
 
-            player.queue = ApplicationMusicPlayer.Queue(for: [loadedPlaylist])
-            player.playbackTime = max(0, startTime)
-            try await player.play()
-            return tracks.compactMap(TrackSnapshot.init(track:))
+            // 라이브러리(보관함) 곡은 콜드 상태에서 스트리밍이 안 됩니다. 친구들 경로처럼
+            // 각 곡을 카탈로그 곡으로 해석(검색)해서 재생하면 콜드에서도 동작합니다.
+            try await play(tracks: snapshots, startIndex: startIndex, startTime: startTime)
+            return snapshots
         }
 
         let songs: [Song]
@@ -206,15 +201,27 @@ final class AppleMusicService: AppleMusicServicing {
             throw AppleMusicPlaybackError.songNotFound
         }
 
-        let safeStartIndex = min(max(0, startIndex), songs.count - 1)
-        player.queue = ApplicationMusicPlayer.Queue(
-            for: songs,
-            startingAt: songs[safeStartIndex]
-        )
-        player.playbackTime = max(0, startTime)
-        try await player.play()
+        try await playSongsColdSafe(songs, startIndex: startIndex, startTime: startTime)
         return songs.map(TrackSnapshot.init(song:))
 #endif
+    }
+
+    /// 콜드 상태의 ApplicationMusicPlayer는 다중 곡 큐로는 재생 연결이 establish되지 않는
+    /// 경우가 있습니다(_establishConnectionIfNeeded timeout). 친구들의 단일 곡 재생처럼
+    /// 먼저 단일 곡으로 큐를 시작해 연결을 깨운 뒤, 나머지 곡을 큐에 이어붙입니다.
+    private func playSongsColdSafe(_ songs: [Song], startIndex: Int, startTime: TimeInterval) async throws {
+        guard !songs.isEmpty else { throw AppleMusicPlaybackError.songNotFound }
+        let safe = min(max(0, startIndex), songs.count - 1)
+
+        player.queue = ApplicationMusicPlayer.Queue(for: [songs[safe]])
+        player.playbackTime = max(0, startTime)
+        try await player.play()
+
+        let rest = Array(songs[(safe + 1)...])
+        if !rest.isEmpty {
+            try? await player.queue.insert(rest, position: .tail)
+        }
+        NSLog("[MonoSync] ▶️ playSongsColdSafe: 첫곡 재생 후 \(rest.count)곡 큐에 추가, playbackStatus=\(player.state.playbackStatus)")
     }
 
     func pause() async throws {
@@ -379,13 +386,17 @@ final class AppleMusicService: AppleMusicServicing {
     }
 
     private func resolveSongs(for tracks: [TrackSnapshot]) async throws -> [Song] {
-        var songs: [Song] = []
-        for track in tracks {
-            if let song = try await resolveSong(for: track) {
-                songs.append(song)
+        // 곡별 카탈로그 검색을 병렬로 수행하고 원래 순서를 보존합니다.
+        try await withThrowingTaskGroup(of: (Int, Song?).self) { group in
+            for (index, track) in tracks.enumerated() {
+                group.addTask { (index, try? await self.resolveSong(for: track)) }
             }
+            var indexed: [(Int, Song)] = []
+            for try await (index, song) in group {
+                if let song { indexed.append((index, song)) }
+            }
+            return indexed.sorted { $0.0 < $1.0 }.map(\.1)
         }
-        return songs
     }
 }
 
