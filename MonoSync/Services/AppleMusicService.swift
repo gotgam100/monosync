@@ -79,14 +79,37 @@ final class AppleMusicService: AppleMusicServicing {
     var authorizationStatus: MusicAuthorization.Status = MusicAuthorization.currentStatus
     var canPlayCatalogContent = true
     private var cachedLibraryPlaylists: [String: Playlist] = [:]
+    private var hasPrimedSession = false
 
     @discardableResult
     func requestAuthorization() async -> MusicAuthorization.Status {
         authorizationStatus = await MusicAuthorization.request()
         if authorizationStatus == .authorized {
             await refreshSubscription()
+            await primePlaybackSessionIfNeeded()
         }
         return authorizationStatus
+    }
+
+    /// 친구들 곡 재생이 하던 일(카탈로그 곡으로 재생 세션 초기화)을 미리 수행합니다.
+    /// 이 세션 초기화 전에는 라이브러리 접근/카탈로그 상세 로딩이 콜드 상태에서 막힙니다.
+    /// 소리는 내지 않고 prepareToPlay로 세션만 깨웁니다.
+    private func primePlaybackSessionIfNeeded() async {
+        guard !hasPrimedSession, authorizationStatus == .authorized else { return }
+        do {
+            var request = MusicCatalogSearchRequest(term: "music", types: [Song.self])
+            request.limit = 1
+            guard let song = try await request.response().songs.first else {
+                NSLog("[MonoSync] 프라이밍용 카탈로그 곡 없음")
+                return
+            }
+            player.queue = ApplicationMusicPlayer.Queue(for: [song])
+            try await player.prepareToPlay()
+            hasPrimedSession = true
+            NSLog("[MonoSync] ✅ 재생 세션 프라이밍 완료")
+        } catch {
+            NSLog("[MonoSync] ⚠️ 재생 세션 프라이밍 실패: \(String(describing: error))")
+        }
     }
 
     func play(track: TrackSnapshot, startTime: TimeInterval = 0) async throws {
@@ -100,6 +123,7 @@ final class AppleMusicService: AppleMusicServicing {
                 throw AppleMusicPlaybackError.authorizationRequired
             }
         }
+        await primePlaybackSessionIfNeeded()
 
         guard let song = try await resolveSong(for: track) else {
             throw AppleMusicPlaybackError.songNotFound
@@ -124,6 +148,7 @@ final class AppleMusicService: AppleMusicServicing {
                 throw AppleMusicPlaybackError.authorizationRequired
             }
         }
+        await primePlaybackSessionIfNeeded()
 
         let resolvedSongs = try await resolveSongs(for: tracks)
         guard !resolvedSongs.isEmpty else {
@@ -147,44 +172,18 @@ final class AppleMusicService: AppleMusicServicing {
                 throw AppleMusicPlaybackError.authorizationRequired
             }
         }
+        await primePlaybackSessionIfNeeded()
 
-        // 라이브러리 플레이리스트는 곡을 하나씩 뽑아내면(songValue 변환) 스트리밍 컨텍스트가
-        // 깨져 콜드 상태에서 재생되지 않습니다. 플레이리스트를 통째로 큐에 넣어 MusicKit이
-        // 트랙·재생 파라미터를 내부에서 펼치도록 합니다.
+        // 플레이리스트는 가져오는 시점에 이미 곡이 해석되어 album.tracks에 채워져 있습니다.
+        // 친구 경로와 동일하게 일반 트랙 재생으로 처리합니다(앨범 단위 일괄 해석 제거).
         if album.id.hasPrefix("monosync-playlist-album:") {
-            let sourceID = album.id.replacingOccurrences(of: "monosync-playlist-album:", with: "")
-            let rawID = sourceID.replacingOccurrences(of: "applemusic-playlist:", with: "")
-            NSLog("[MonoSync] play(album:) 플레이리스트 재생 시도. rawID=\(rawID), 캐시히트=\(cachedLibraryPlaylists[rawID] != nil)")
-
-            let basePlaylist: Playlist
-            if let cached = cachedLibraryPlaylists[rawID] {
-                basePlaylist = cached
-            } else {
-                let fetchedPlaylist = try await withMusicTimeout { () -> Playlist? in
-                    var request = MusicLibraryRequest<Playlist>()
-                    request.filter(matching: \.id, equalTo: MusicItemID(rawID))
-                    request.limit = 1
-                    return try await request.response().items.first
-                }
-                guard let fetched = fetchedPlaylist else {
-                    throw AppleMusicPlaybackError.songNotFound
-                }
-                cachedLibraryPlaylists[rawID] = fetched
-                basePlaylist = fetched
-            }
-
-            let loadedPlaylist = try await withMusicTimeout { try await basePlaylist.with(.tracks) }
-            let libraryTracks = loadedPlaylist.tracks.map(Array.init) ?? []
-            let snapshots = libraryTracks.compactMap(TrackSnapshot.init(track:))
-            NSLog("[MonoSync] play(album:) 플레이리스트 \(snapshots.count)곡을 카탈로그로 변환해 재생")
-            guard !snapshots.isEmpty else {
+            let tracks = album.tracks
+            NSLog("[MonoSync] play(album:) 플레이리스트 \(tracks.count)곡을 트랙 단위로 재생")
+            guard !tracks.isEmpty else {
                 throw AppleMusicPlaybackError.songNotFound
             }
-
-            // 라이브러리(보관함) 곡은 콜드 상태에서 스트리밍이 안 됩니다. 친구들 경로처럼
-            // 각 곡을 카탈로그 곡으로 해석(검색)해서 재생하면 콜드에서도 동작합니다.
-            try await play(tracks: snapshots, startIndex: startIndex, startTime: startTime)
-            return snapshots
+            try await play(tracks: tracks, startIndex: startIndex, startTime: startTime)
+            return tracks
         }
 
         let songs: [Song]
@@ -216,12 +215,23 @@ final class AppleMusicService: AppleMusicServicing {
         player.queue = ApplicationMusicPlayer.Queue(for: [songs[safe]])
         player.playbackTime = max(0, startTime)
         try await player.play()
+        NSLog("[MonoSync] ▶️ playSongsColdSafe: 1차 play 후 playbackStatus=\(player.state.playbackStatus)")
+
+        // 콜드 연결은 첫 play()에서 establish만 되고 재생이 시작되지 않는 경우가 있습니다.
+        // 실제로 재생 중이 아니면 잠깐 뒤 한 번 더 시도합니다.
+        var attempt = 0
+        while player.state.playbackStatus != .playing, attempt < 3 {
+            attempt += 1
+            try? await Task.sleep(for: .milliseconds(400))
+            try? await player.play()
+            NSLog("[MonoSync] ▶️ playSongsColdSafe: 재시도 \(attempt) 후 playbackStatus=\(player.state.playbackStatus)")
+        }
 
         let rest = Array(songs[(safe + 1)...])
         if !rest.isEmpty {
             try? await player.queue.insert(rest, position: .tail)
         }
-        NSLog("[MonoSync] ▶️ playSongsColdSafe: 첫곡 재생 후 \(rest.count)곡 큐에 추가, playbackStatus=\(player.state.playbackStatus)")
+        NSLog("[MonoSync] ▶️ playSongsColdSafe: \(rest.count)곡 큐에 추가 완료, playbackStatus=\(player.state.playbackStatus)")
     }
 
     func pause() async throws {
@@ -239,6 +249,7 @@ final class AppleMusicService: AppleMusicServicing {
                 throw AppleMusicPlaybackError.authorizationRequired
             }
         }
+        await primePlaybackSessionIfNeeded()
 
         if let startTime {
             player.playbackTime = max(0, startTime)
@@ -364,6 +375,8 @@ final class AppleMusicService: AppleMusicServicing {
                 throw AppleMusicPlaybackError.authorizationRequired
             }
         }
+        await primePlaybackSessionIfNeeded()
+        await primePlaybackSessionIfNeeded()
     }
 
     private func resolveSong(for track: TrackSnapshot) async throws -> Song? {

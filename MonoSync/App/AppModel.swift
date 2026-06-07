@@ -542,16 +542,41 @@ final class AppModel {
 
     @MainActor
     func importAppleMusicPlaylistToDrawer(_ playlist: MusicCollectionSnapshot) async {
-        let album = AlbumSnapshot(
-            id: "monosync-playlist-album:\(playlist.sourceID)",
-            title: playlist.title,
-            artistName: playlist.subtitle,
-            releaseYear: "플레이리스트",
-            artworkURL: playlist.artworkURL,
-            tracks: []
-        )
-        addAlbumToDrawer(album)
-        appleMusicShelfStatusText = "\(playlist.title)을 내 서랍에 넣었어요"
+        shelfOperationGeneration += 1
+        let generation = shelfOperationGeneration
+        isLoadingAppleMusicShelf = true
+        appleMusicShelfStatusText = "\(playlist.title) 가져오는 중"
+        watchShelfOperation(generation: generation, message: "플레이리스트 응답이 늦어요. 잠시 뒤 다시 시도해 주세요.")
+
+        // 친구 곡 경로처럼 가져오는 시점에 곡을 즉시 해석해 둡니다. 빈 껍데기 앨범으로 넣고
+        // 재생 시점에 앨범 단위로 펼치는 방식은 콜드 상태에서 트랙이 안 뜨고 A면에도
+        // 들어가지 않아, 일반 트랙들로 이뤄진 앨범으로 통일합니다.
+        do {
+            let tracks = try await musicService.tracks(in: playlist)
+            guard generation == shelfOperationGeneration else { return }
+            guard !tracks.isEmpty else {
+                appleMusicShelfStatusText = "가져올 곡이 없어요"
+                isLoadingAppleMusicShelf = false
+                return
+            }
+            let album = AlbumSnapshot(
+                id: "monosync-playlist-album:\(playlist.sourceID)",
+                title: playlist.title,
+                artistName: playlist.subtitle,
+                releaseYear: "플레이리스트",
+                artworkURL: playlist.artworkURL ?? tracks.first?.artworkURL,
+                tracks: tracks
+            )
+            addAlbumToDrawer(album)
+            appleMusicShelfStatusText = "\(playlist.title)을 내 서랍에 넣었어요"
+        } catch let error as AppleMusicPlaybackError {
+            guard generation == shelfOperationGeneration else { return }
+            appleMusicShelfStatusText = error.errorDescription ?? "플레이리스트를 가져오지 못했어요"
+        } catch {
+            guard generation == shelfOperationGeneration else { return }
+            appleMusicShelfStatusText = musicPlaybackFailureMessage(for: error)
+        }
+        guard generation == shelfOperationGeneration else { return }
         isLoadingAppleMusicShelf = false
     }
 
