@@ -1,0 +1,58 @@
+name: MonoSync
+options:
+  bundleIdPrefix: com.baekmac
+  xcodeVersion: "26.5"
+  developmentLanguage: ko
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    DEVELOPMENT_LANGUAGE: ko
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
+    SWIFT_VERSION: 5.9
+    DEVELOPMENT_TEAM: SB2Z6HL579
+    CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    STRING_CATALOG_GENERATE_SYMBOLS: YES
+    ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: YES
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+targets:
+  MonoSync:
+    type: application
+    platform: iOS
+    sources:
+      - path: MonoSync
+      - path: Font/Paperlogy-4Regular.ttf
+        buildPhase: resources
+      - path: Font/Paperlogy-5Medium.ttf
+        buildPhase: resources
+      - path: Font/Paperlogy-6SemiBold.ttf
+        buildPhase: resources
+      - path: Font/Paperlogy-7Bold.ttf
+        buildPhase: resources
+      - path: Font/Cafe24PROSlimAir.ttf
+        buildPhase: resources
+      - path: image/tape_full.png
+        buildPhase: resources
+      - path: image/round.png
+        buildPhase: resources
+      - path: sound/Button_1_204715.wav
+        buildPhase: resources
+      - path: sound/INOUT_510085.wav
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.baekmac.MonoSync
+        PRODUCT_NAME: MonoSync
+        INFOPLIST_FILE: MonoSync/Support/Info.plist
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.music
+        CODE_SIGN_ENTITLEMENTS: MonoSync/Support/MonoSync.entitlements
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: 1
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+    scheme:
+      testTargets: []
