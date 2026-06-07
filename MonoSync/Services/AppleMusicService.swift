@@ -6,6 +6,7 @@ enum AppleMusicPlaybackError: LocalizedError {
     case authorizationRequired
     case subscriptionRequired
     case songNotFound
+    case timedOut
 
     var errorDescription: String? {
         switch self {
@@ -17,7 +18,29 @@ enum AppleMusicPlaybackError: LocalizedError {
             "애플뮤직 구독 상태를 확인해야 합니다."
         case .songNotFound:
             "애플뮤직에서 곡을 찾지 못했습니다."
+        case .timedOut:
+            "Apple Music 응답 없음 (보관함 동기화/계정 확인 필요)"
         }
+    }
+}
+
+/// 주어진 비동기 작업을 제한 시간 안에 끝내지 못하면 timedOut을 던집니다.
+/// MusicKit의 .with(.tracks) 등이 스토어프론트 문제로 무한 대기에 빠지는 것을 막습니다.
+func withMusicTimeout<T: Sendable>(
+    seconds: TimeInterval = 15,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(for: .seconds(seconds))
+            throw AppleMusicPlaybackError.timedOut
+        }
+        guard let result = try await group.next() else {
+            throw AppleMusicPlaybackError.timedOut
+        }
+        group.cancelAll()
+        return result
     }
 }
 
@@ -135,14 +158,20 @@ final class AppleMusicService: AppleMusicServicing {
         if album.id.hasPrefix("monosync-playlist-album:") {
             let sourceID = album.id.replacingOccurrences(of: "monosync-playlist-album:", with: "")
             let rawID = sourceID.replacingOccurrences(of: "applemusic-playlist:", with: "")
+            #if DEBUG
+            print("[MonoSync] play(album:) 플레이리스트 재생 시도. rawID=\(rawID), 캐시히트=\(cachedLibraryPlaylists[rawID] != nil)")
+            #endif
             if let cached = cachedLibraryPlaylists[rawID] {
-                songs = try await Task.detached(priority: .userInitiated) { () -> [Song] in
+                songs = try await withMusicTimeout { () -> [Song] in
                     let loaded = try await cached.with(.tracks)
                     return loaded.tracks?.compactMap(\.songValue) ?? []
-                }.value
+                }
             } else {
-                songs = try await AppleMusicLibraryTrackLoader.playlistSongs(sourceID: sourceID)
+                songs = try await withMusicTimeout { try await AppleMusicLibraryTrackLoader.playlistSongs(sourceID: sourceID) }
             }
+            #if DEBUG
+            print("[MonoSync] play(album:) 트랙 로딩 완료. songs.count=\(songs.count)")
+            #endif
         } else if album.id.hasPrefix("applemusic-album:") {
             songs = try await AppleMusicLibraryTrackLoader.catalogAlbumSongs(albumID: album.id)
         } else {
@@ -206,13 +235,40 @@ final class AppleMusicService: AppleMusicServicing {
         var searchRequest = MusicCatalogSearchRequest(term: trimmedTerm, types: [Album.self])
         searchRequest.limit = 12
         let response = try await searchRequest.response()
+        let foundAlbums = Array(response.albums)
+        #if DEBUG
+        print("[MonoSync] searchAlbums: \(foundAlbums.count)개 앨범 검색됨, 트랙 로딩 시작")
+        #endif
 
-        var albums: [AlbumSnapshot] = []
-        for album in response.albums {
-            let albumWithTracks = try await album.with(.tracks)
-            albums.append(AlbumSnapshot(album: albumWithTracks))
-        }
-        return albums
+        // 앨범별 .with(.tracks)를 메인 스레드 밖에서 병렬로, 타임아웃과 함께 실행합니다.
+        // 한 앨범이 응답을 안 줘도 전체가 멈추지 않도록 실패한 앨범은 건너뜁니다.
+        let snapshots: [AlbumSnapshot] = try await Task.detached(priority: .userInitiated) {
+            try await withThrowingTaskGroup(of: AlbumSnapshot?.self) { group in
+                for album in foundAlbums {
+                    group.addTask {
+                        do {
+                            let loaded = try await withMusicTimeout(seconds: 10) { try await album.with(.tracks) }
+                            return AlbumSnapshot(album: loaded)
+                        } catch {
+                            #if DEBUG
+                            print("[MonoSync] searchAlbums: '\(album.title)' 트랙 로딩 실패/타임아웃 →", String(describing: error))
+                            #endif
+                            return nil
+                        }
+                    }
+                }
+                var result: [AlbumSnapshot] = []
+                for try await snapshot in group {
+                    if let snapshot { result.append(snapshot) }
+                }
+                return result
+            }
+        }.value
+
+        #if DEBUG
+        print("[MonoSync] searchAlbums: 트랙 로딩 완료, 최종 \(snapshots.count)개")
+        #endif
+        return snapshots
     }
 
     func libraryPlaylists() async throws -> [MusicCollectionSnapshot] {
@@ -239,10 +295,10 @@ final class AppleMusicService: AppleMusicServicing {
         let rawID = playlist.sourceID.replacingOccurrences(of: "applemusic-playlist:", with: "")
 
         if let cached = cachedLibraryPlaylists[rawID] {
-            let songs = try await Task.detached(priority: .userInitiated) { () -> [Song] in
+            let songs = try await withMusicTimeout { () -> [Song] in
                 let loaded = try await cached.with(.tracks)
                 return loaded.tracks?.compactMap(\.songValue) ?? []
-            }.value
+            }
             return songs.map(TrackSnapshot.init(song:))
         }
 
