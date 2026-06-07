@@ -174,34 +174,19 @@ final class AppleMusicService: AppleMusicServicing {
         }
         await primePlaybackSessionIfNeeded()
 
-        // 플레이리스트는 가져오는 시점에 이미 곡이 해석되어 album.tracks에 채워져 있습니다.
-        // 친구 경로와 동일하게 일반 트랙 재생으로 처리합니다(앨범 단위 일괄 해석 제거).
-        if album.id.hasPrefix("monosync-playlist-album:") {
-            let tracks = album.tracks
-            NSLog("[MonoSync] play(album:) 플레이리스트 \(tracks.count)곡을 트랙 단위로 재생")
-            guard !tracks.isEmpty else {
-                throw AppleMusicPlaybackError.songNotFound
-            }
-            try await play(tracks: tracks, startIndex: startIndex, startTime: startTime)
-            return tracks
+        // 앨범 단위 일괄 해석(.with(.tracks) at 재생)을 사용하지 않습니다.
+        // 모든 앨범/플레이리스트는 담는 시점에 album.tracks가 채워지므로, 친구 곡 경로와
+        // 동일하게 트랙 단위로 재생합니다. 비어 있으면 그때만 한 번 로드합니다.
+        var albumTracks = album.tracks
+        if albumTracks.isEmpty {
+            albumTracks = (try? await tracks(in: album)) ?? []
         }
-
-        let songs: [Song]
-        if album.id.hasPrefix("applemusic-album:") {
-            songs = try await withMusicTimeout { try await AppleMusicLibraryTrackLoader.catalogAlbumSongs(albumID: album.id) }
-            NSLog("[MonoSync] play(album:) 카탈로그 앨범 트랙 로딩 완료. songs.count=\(songs.count)")
-        } else {
-            let tracks = album.tracks
-            try await play(tracks: tracks, startIndex: startIndex, startTime: startTime)
-            return tracks
-        }
-
-        guard !songs.isEmpty else {
+        guard !albumTracks.isEmpty else {
             throw AppleMusicPlaybackError.songNotFound
         }
-
-        try await playSongsColdSafe(songs, startIndex: startIndex, startTime: startTime)
-        return songs.map(TrackSnapshot.init(song:))
+        NSLog("[MonoSync] play(album:) \(albumTracks.count)곡 트랙 단위 재생")
+        try await play(tracks: albumTracks, startIndex: startIndex, startTime: startTime)
+        return albumTracks
 #endif
     }
 
@@ -459,16 +444,6 @@ private struct AppleMusicLibraryTrackLoader {
 
         let playlistWithTracks = try await libraryPlaylist.with(.tracks)
         return playlistWithTracks.tracks?.compactMap(\.songValue) ?? []
-    }
-
-    static func catalogAlbumSongs(albumID: AlbumSnapshot.ID) async throws -> [Song] {
-        let rawID = albumID.replacingOccurrences(of: "applemusic-album:", with: "")
-        let request = MusicCatalogResourceRequest<Album>(matching: \.id, equalTo: MusicItemID(rawID))
-        let response = try await request.response()
-        guard let catalogAlbum = response.items.first else { return [] }
-
-        let albumWithTracks = try await catalogAlbum.with(.tracks)
-        return albumWithTracks.tracks?.compactMap(\.songValue) ?? []
     }
 }
 

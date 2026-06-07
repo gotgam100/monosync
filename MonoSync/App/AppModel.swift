@@ -147,6 +147,23 @@ final class AppModel {
         appleMusicShelfStatusText = searchStatusText
     }
 
+    /// 검색 앨범은 트랙이 비어 있으므로, 담는 시점에 곡을 즉시 로드해 채웁니다.
+    /// (앨범 단위 일괄 해석을 재생 시점에 하지 않도록 통일)
+    @MainActor
+    func addSearchAlbumToDrawer(_ album: AlbumSnapshot) async {
+        if drawerAlbums.contains(where: { $0.id == album.id }) {
+            searchStatusText = "이미 내 서랍에 있는 앨범이에요"
+            return
+        }
+
+        var resolved = album
+        if resolved.tracks.isEmpty {
+            searchStatusText = "\(album.title) 곡 불러오는 중"
+            resolved.tracks = (try? await musicService.tracks(in: album)) ?? []
+        }
+        addAlbumToDrawer(resolved)
+    }
+
     @MainActor
     func insertAlbum(_ album: AlbumSnapshot, into side: CassetteSide) async {
         if mySpace.currentTrack != nil || isMusicPlaybackActive || !pressedCassetteButtons.isEmpty {

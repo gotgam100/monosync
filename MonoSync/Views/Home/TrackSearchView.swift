@@ -122,8 +122,8 @@ struct TrackSearchView: View {
     }
 
     private func addAlbum(_ album: AlbumSnapshot) {
-        appModel.addAlbumToDrawer(album)
         addedAlbumIDs.insert(album.id)
+        Task { await appModel.addSearchAlbumToDrawer(album) }
     }
 
     private func isAlbumInDrawer(_ album: AlbumSnapshot) -> Bool {
