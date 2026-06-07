@@ -317,6 +317,10 @@ final class AppleMusicService: AppleMusicServicing {
 
     func tracks(in album: AlbumSnapshot) async throws -> [TrackSnapshot] {
         if album.id.hasPrefix("monosync-playlist-album:") {
+            // 플레이리스트는 가져올 때 이미 곡이 해석되어 들어있습니다. 다시 조회하지 않습니다.
+            if !album.tracks.isEmpty {
+                return album.tracks
+            }
             try await ensureMusicAccess()
             let sourceID = album.id.replacingOccurrences(of: "monosync-playlist-album:", with: "")
             let tracks = try await AppleMusicLibraryTrackLoader.playlistTracks(sourceID: sourceID)
