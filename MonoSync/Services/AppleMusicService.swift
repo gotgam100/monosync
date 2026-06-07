@@ -154,21 +154,46 @@ final class AppleMusicService: AppleMusicServicing {
             }
         }
 
-        let songs: [Song]
+        // 라이브러리 플레이리스트는 곡을 하나씩 뽑아내면(songValue 변환) 스트리밍 컨텍스트가
+        // 깨져 콜드 상태에서 재생되지 않습니다. 플레이리스트를 통째로 큐에 넣어 MusicKit이
+        // 트랙·재생 파라미터를 내부에서 펼치도록 합니다.
         if album.id.hasPrefix("monosync-playlist-album:") {
             let sourceID = album.id.replacingOccurrences(of: "monosync-playlist-album:", with: "")
             let rawID = sourceID.replacingOccurrences(of: "applemusic-playlist:", with: "")
             NSLog("[MonoSync] play(album:) 플레이리스트 재생 시도. rawID=\(rawID), 캐시히트=\(cachedLibraryPlaylists[rawID] != nil)")
+
+            let basePlaylist: Playlist
             if let cached = cachedLibraryPlaylists[rawID] {
-                songs = try await withMusicTimeout { () -> [Song] in
-                    let loaded = try await cached.with(.tracks)
-                    return loaded.tracks?.compactMap(\.songValue) ?? []
-                }
+                basePlaylist = cached
             } else {
-                songs = try await withMusicTimeout { try await AppleMusicLibraryTrackLoader.playlistSongs(sourceID: sourceID) }
+                let fetchedPlaylist = try await withMusicTimeout { () -> Playlist? in
+                    var request = MusicLibraryRequest<Playlist>()
+                    request.filter(matching: \.id, equalTo: MusicItemID(rawID))
+                    request.limit = 1
+                    return try await request.response().items.first
+                }
+                guard let fetched = fetchedPlaylist else {
+                    throw AppleMusicPlaybackError.songNotFound
+                }
+                cachedLibraryPlaylists[rawID] = fetched
+                basePlaylist = fetched
             }
-            NSLog("[MonoSync] play(album:) 플레이리스트 트랙 로딩 완료. songs.count=\(songs.count)")
-        } else if album.id.hasPrefix("applemusic-album:") {
+
+            let loadedPlaylist = try await withMusicTimeout { try await basePlaylist.with(.tracks) }
+            let tracks = loadedPlaylist.tracks.map(Array.init) ?? []
+            NSLog("[MonoSync] play(album:) 플레이리스트 트랙 \(tracks.count)곡, 컬렉션 통째로 큐잉")
+            guard !tracks.isEmpty else {
+                throw AppleMusicPlaybackError.songNotFound
+            }
+
+            player.queue = ApplicationMusicPlayer.Queue(for: [loadedPlaylist])
+            player.playbackTime = max(0, startTime)
+            try await player.play()
+            return tracks.compactMap(TrackSnapshot.init(track:))
+        }
+
+        let songs: [Song]
+        if album.id.hasPrefix("applemusic-album:") {
             songs = try await withMusicTimeout { try await AppleMusicLibraryTrackLoader.catalogAlbumSongs(albumID: album.id) }
             NSLog("[MonoSync] play(album:) 카탈로그 앨범 트랙 로딩 완료. songs.count=\(songs.count)")
         } else {
