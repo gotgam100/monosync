@@ -1,5 +1,6 @@
 import Foundation
 import MusicKit
+import AVFoundation
 
 enum AppleMusicPlaybackError: LocalizedError {
     case realDeviceRequired
@@ -106,8 +107,7 @@ final class AppleMusicService: AppleMusicServicing {
         }
 
         player.queue = ApplicationMusicPlayer.Queue(for: [song])
-        player.playbackTime = max(0, startTime)
-        try await player.play()
+        try await startQueuePlayback(startTime: startTime)
 #endif
     }
 
@@ -135,8 +135,7 @@ final class AppleMusicService: AppleMusicServicing {
             for: resolvedSongs,
             startingAt: resolvedSongs[safeStartIndex]
         )
-        player.playbackTime = max(0, startTime)
-        try await player.play()
+        try await startQueuePlayback(startTime: startTime)
 #endif
     }
 
@@ -186,10 +185,33 @@ final class AppleMusicService: AppleMusicServicing {
             for: songs,
             startingAt: songs[safeStartIndex]
         )
-        player.playbackTime = max(0, startTime)
-        try await player.play()
+        try await startQueuePlayback(startTime: startTime)
         return songs.map(TrackSnapshot.init(song:))
 #endif
+    }
+
+    /// 오디오 세션을 재생용으로 활성화하고 큐를 재생합니다.
+    /// ApplicationMusicPlayer가 play()는 성공하지만 무음인 문제(세션 미활성)를 막습니다.
+    private func startQueuePlayback(startTime: TimeInterval) async throws {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+        } catch {
+            NSLog("[MonoSync] ⚠️ 오디오 세션 활성화 실패: \(String(describing: error))")
+        }
+
+        do {
+            try await player.prepareToPlay()
+        } catch {
+            NSLog("[MonoSync] ⚠️ prepareToPlay 실패(계속 진행): \(String(describing: error))")
+        }
+
+        try await player.play()
+        if startTime > 0 {
+            player.playbackTime = startTime
+        }
+        NSLog("[MonoSync] ▶️ player.play() 호출 완료. playbackStatus=\(player.state.playbackStatus)")
     }
 
     func pause() async throws {
@@ -208,10 +230,17 @@ final class AppleMusicService: AppleMusicServicing {
             }
         }
 
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+        } catch {
+            NSLog("[MonoSync] ⚠️ resume 오디오 세션 활성화 실패: \(String(describing: error))")
+        }
+        try await player.play()
         if let startTime {
             player.playbackTime = max(0, startTime)
         }
-        try await player.play()
 #endif
     }
 
