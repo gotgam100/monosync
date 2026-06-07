@@ -400,7 +400,7 @@ final class AppleMusicService: AppleMusicServicing {
     }
 }
 
-private extension MusicPlayer.PlaybackStatus {
+private extension MusicKit.MusicPlayer.PlaybackStatus {
     var monoPlaybackState: PlaybackState {
         switch self {
         case .playing, .seekingForward, .seekingBackward:
@@ -415,7 +415,7 @@ private extension MusicPlayer.PlaybackStatus {
     }
 }
 
-private extension MusicPlayer.Queue.Entry {
+private extension MusicKit.MusicPlayer.Queue.Entry {
     var snapshot: TrackSnapshot? {
         switch item {
         case let .song(song):
