@@ -6,15 +6,25 @@ struct NowPlayingPanel: View {
     let listenerSpaces: [ListeningSpace]
     let album: AlbumSnapshot?
     let cassetteSide: CassetteSide
-    let discSize: CGFloat
+    let isActiveSide: Bool
+    let topRegionHeight: CGFloat
     let cassetteSize: CGFloat
     let compact: Bool
+    let isLandscape: Bool
     let cassetteToArtwork: CGFloat
     let statusText: String
     let isPlaying: Bool
     let isAppleMusicConnected: Bool
     let pressedButtons: Set<CassetteTransportButton>
+    // 서랍(인라인) 관련
+    let showsAlbumArt: Bool
+    let drawerAlbums: [AlbumSnapshot]
     let onConnectAppleMusic: () -> Void
+    let onAddAlbum: () -> Void
+    let onDeleteAlbum: (AlbumSnapshot) -> Void
+    let onShowDrawer: () -> Void
+    let onInsertDroppedAlbum: (String) -> Void
+    let onCassetteSwipeUp: () -> Void
     let onBack: () -> Void
     let onPlay: () -> Void
     let onPause: () -> Void
@@ -23,11 +33,36 @@ struct NowPlayingPanel: View {
     let onOpenTools: () -> Void
 
     var body: some View {
-        let safeDiscSize = discSize.isFinite ? max(discSize, 96) : 140
+        let safeTopHeight = topRegionHeight.isFinite ? max(topRegionHeight, 120) : 200
         let safeCassetteSize = cassetteSize.isFinite ? max(cassetteSize, 220) : 280
-        let safeCassetteHeight = safeCassetteSize * (787.0 / 930.0)
+        // 가로 모드일 경우 테이프 본체 비율(637/930), 세로일 경우 전체 비율(877/930) 적용
+        let heightRatio = isLandscape ? (637.0 / 930.0) : (877.0 / 930.0)
+        let safeCassetteHeight = safeCassetteSize * heightRatio
 
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .center, spacing: 0) {
+            // ── 상단: 서랍 그리드 ↔ 앨범아트 ──
+            if topRegionHeight > 0 {
+                ZStack(alignment: .top) {
+                    DrawerStackView(
+                        albums: drawerAlbums,
+                        activeAlbumID: album?.id,
+                        isPlaying: isPlaying,
+                        onAddAlbum: onAddAlbum,
+                        onDeleteAlbum: onDeleteAlbum,
+                        onInsertAlbum: { album in onInsertDroppedAlbum(album.id) }
+                    )
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: safeTopHeight)
+                .padding(.horizontal, 16)
+                .animation(.spring(response: 0.45, dampingFraction: 0.7), value: showsAlbumArt)
+
+                Spacer()
+                    .frame(height: cassetteToArtwork)
+            } else {
+                Spacer()
+            }
+
             CassetteDeckView(
                 track: space.currentTrack,
                 album: album,
@@ -35,45 +70,22 @@ struct NowPlayingPanel: View {
                 isPlaying: isPlaying,
                 pressedButtons: pressedButtons,
                 compact: compact,
+                isLandscape: isLandscape,
                 onBack: onBack,
                 onPlay: onPlay,
                 onPause: onPause,
                 onNext: onNext,
                 onStop: onStop,
-                onOpenTools: onOpenTools
+                onOpenTools: onOpenTools,
+                onSwipeUp: onCassetteSwipeUp
             )
             .frame(width: safeCassetteSize, height: safeCassetteHeight)
             .frame(maxWidth: .infinity)
-
-            Spacer()
-                .frame(height: cassetteToArtwork)
-
-            PlayerArtworkView(
-                track: space.currentTrack,
-                album: album,
-                listenerSpaces: listenerSpaces,
-                isAppleMusicConnected: isAppleMusicConnected,
-                onConnectAppleMusic: onConnectAppleMusic
-            )
-                .frame(width: safeDiscSize, height: safeDiscSize)
-                .frame(maxWidth: .infinity)
-                .frame(height: safeDiscSize)
-                .padding(.horizontal, 16)
-
-            if let album {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(album.title)
-                        .font(MonoTheme.bodyMedium)
-                        .foregroundStyle(MonoTheme.paper)
-                        .lineLimit(1)
-                    Text(album.releaseYear ?? "연도 미상")
-                        .font(MonoTheme.small)
-                        .foregroundStyle(MonoTheme.mist)
-                        .lineLimit(1)
-                }
-                .padding(.top, compact ? 8 : 10)
-                .padding(.horizontal, 16)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // 서랍 카드를 끌어와 떨어뜨리면 현재 선택된 면에 삽입.
+            .dropDestination(for: String.self) { items, _ in
+                guard let id = items.first else { return false }
+                onInsertDroppedAlbum(id)
+                return true
             }
         }
         .frame(maxWidth: .infinity)
@@ -83,20 +95,47 @@ struct NowPlayingPanel: View {
 private struct PlayerArtworkView: View {
     let track: TrackSnapshot?
     let album: AlbumSnapshot?
+    let isActiveSide: Bool
     let listenerSpaces: [ListeningSpace]
     let isAppleMusicConnected: Bool
     let onConnectAppleMusic: () -> Void
-    @State private var isShowingTrackList = false
+    let onShowDrawer: () -> Void
+    @State private var isShowingAlbumInfo = false
+    
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
-            if track == nil {
+            let artworkURL = isActiveSide ? (track?.artworkURL ?? album?.artworkURL) : album?.artworkURL
+            if let artworkURL {
+                // 영역 전체를 앨범이미지로 채움(서랍 창 전체가 앨범이미지가 되는 효과).
+                ReliableAsyncImage(url: artworkURL) { image in
+                    image.resizable().scaledToFit()
+                } placeholder: {
+                    MonoTheme.panel.overlay { ProgressView().tint(MonoTheme.accent) }
+                }
+                .overlay(alignment: .topTrailing) {
+                    if album != nil {
+                        Button {
+                            isShowingAlbumInfo = true
+                        } label: {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(MonoTheme.paper)
+                                .frame(width: 28, height: 28)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(8)
+                        .accessibilityLabel("앨범 정보")
+                    }
+                }
+            } else {
                 AppleMusicArtworkConnectButton(
                     isConnected: isAppleMusicConnected,
                     action: onConnectAppleMusic
                 )
-            } else {
-                AlbumArtworkView(url: track?.artworkURL, cornerRadius: 8)
             }
         }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -105,71 +144,108 @@ private struct PlayerArtworkView: View {
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(Color.white.opacity(0.08), lineWidth: 1)
             }
+            .overlay(alignment: .top) {
+                // 아래로 스와이프해 서랍으로 돌아갈 수 있음을 알리는 핸들.
+                Capsule()
+                    .fill(Color.white.opacity(0.55))
+                    .frame(width: 38, height: 5)
+                    .padding(.top, 8)
+            }
             .overlay(alignment: .bottomTrailing) {
                 ArtworkListenerStack(spaces: listenerSpaces)
                     .padding(8)
             }
-            .overlay(alignment: .topTrailing) {
-                if let album, !album.tracks.isEmpty {
-                    Button {
-                        isShowingTrackList = true
-                    } label: {
-                        Image(systemName: "list.bullet")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(MonoTheme.paper)
-                            .frame(width: 28, height: 28)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Circle())
+            .contentShape(Rectangle())
+            // 아래로 스와이프 → 서랍 그리드로 복귀.
+            .gesture(
+                DragGesture(minimumDistance: 24)
+                    .onEnded { value in
+                        if value.translation.height > 44,
+                           value.translation.height > abs(value.translation.width) {
+                            onShowDrawer()
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .padding(8)
-                    .accessibilityLabel("앨범 곡 목록")
+            )
+            .sheet(isPresented: $isShowingAlbumInfo) {
+                if let album {
+                    AlbumInfoSheetView(album: album)
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
                 }
-            }
-            .sheet(isPresented: $isShowingTrackList) {
-                AlbumTrackListSheet(album: album)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
             }
     }
 }
 
 private struct AlbumTrackListSheet: View {
     let album: AlbumSnapshot?
+    let currentTrack: TrackSnapshot?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array((album?.tracks ?? []).enumerated()), id: \.offset) { index, track in
+                        let isCurrentTrack = currentTrack.map { track.matches($0) } ?? false
+
                         HStack(spacing: 10) {
-                            Text("\(index + 1)")
-                                .font(MonoTheme.small)
-                                .foregroundStyle(MonoTheme.mist)
-                                .frame(width: 26, alignment: .trailing)
+                            ZStack {
+                                if isCurrentTrack {
+                                    Circle()
+                                        .fill(MonoTheme.accent)
+                                        .frame(width: 22, height: 22)
+                                }
+                                Text("\(index + 1)")
+                                    .font(MonoTheme.small)
+                                    .foregroundStyle(isCurrentTrack ? MonoTheme.paper : MonoTheme.mist)
+                                    .frame(width: 26, alignment: .center)
+                            }
 
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(track.title)
                                     .font(MonoTheme.bodyMedium)
-                                    .foregroundStyle(MonoTheme.paper)
+                                    .foregroundStyle(isCurrentTrack ? MonoTheme.accent : MonoTheme.paper)
                                     .lineLimit(1)
                                 Text(track.artistName)
                                     .font(MonoTheme.small)
-                                    .foregroundStyle(MonoTheme.mist)
+                                    .foregroundStyle(isCurrentTrack ? MonoTheme.paper.opacity(0.9) : MonoTheme.mist)
                                     .lineLimit(1)
                             }
                             Spacer()
+
+                            if isCurrentTrack {
+                                Image(systemName: "waveform")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundStyle(MonoTheme.accent)
+                            }
                         }
                         .padding(12)
-                        .background(Color.white.opacity(0.045))
+                        .background(isCurrentTrack ? MonoTheme.accent.opacity(0.16) : Color.white.opacity(0.045))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(isCurrentTrack ? MonoTheme.accent.opacity(0.55) : Color.clear, lineWidth: 1)
+                        }
                     }
                 }
                 .padding(18)
             }
             .background(MonoTheme.ink.ignoresSafeArea())
-            .navigationTitle(album?.title ?? "곡 목록")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    VStack(spacing: 2) {
+                        Text(album?.title ?? "곡 목록")
+                            .font(Font.custom("NotoSansKR-Medium", size: 16))
+                            .foregroundStyle(MonoTheme.paper)
+                        
+                        if let releaseYear = album?.releaseYear {
+                            Text(releaseYear)
+                                .font(Font.custom("NotoSansKR-Regular", size: 12))
+                                .foregroundStyle(MonoTheme.mist)
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -259,15 +335,13 @@ private struct PlayerBackgroundView: View {
     var body: some View {
         ZStack {
             if let url = track?.artworkURL {
-                AsyncImage(url: url) { phase in
-                    if case let .success(image) = phase {
-                        image
-                            .resizable()
-                            .scaledToFill()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        MonoTheme.panel
-                    }
+                ReliableAsyncImage(url: url) { image in
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } placeholder: {
+                    MonoTheme.panel
                 }
             } else {
                 MonoTheme.panel
@@ -320,103 +394,285 @@ private struct CassetteDeckView: View {
     let isPlaying: Bool
     let pressedButtons: Set<CassetteTransportButton>
     let compact: Bool
+    let isLandscape: Bool
     let onBack: () -> Void
     let onPlay: () -> Void
     let onPause: () -> Void
     let onNext: () -> Void
     let onStop: () -> Void
     let onOpenTools: () -> Void
+    let onSwipeUp: () -> Void
+    @State private var dragOffset: CGFloat = 0
+    @State private var slideOffset: CGFloat = 0
+    @State private var isSlidingSide = false
+
+    private var albumDetailText: String {
+        guard let album else { return "-" }
+        return album.isPlaylistAlbum ? album.primaryDetailText : (album.releaseYear ?? "연도 미상")
+    }
 
     var body: some View {
         GeometryReader { proxy in
             let width = proxy.size.width
             let height = proxy.size.height
-            let buttonRowWidth = width
-            let buttonRowHeight = height * (165.0 / 787.0)
-            let buttonRowCenterY = height * (704.5 / 787.0)
+            // 가로 모드일 땐 버튼을 숨기므로 카세트 본체(637) 비율만 차지, 세로일 땐 버튼(240) 포함(877)
+            let cassetteHeight = isLandscape ? height : height * (637.0 / 877.0)
+            // Button_N5(930×552). 본체 전체 높이(나머지는 덱 프레임 아래로 흘러갑니다).
+            let buttonStripHeight = width * (552.0 / 930.0)
+            let baseWidth: CGFloat = 370.0
+            let scale = width / baseWidth
+            
+            let transportButtons: [(label: String, action: () -> Void, isLatched: Bool)] = [
+                ("이전 곡", onBack, pressedButtons.contains(.previous)),
+                ("재생", onPlay, pressedButtons.contains(.play)),
+                ("일시정지", onPause, pressedButtons.contains(.pause)),
+                ("다음 곡", onNext, pressedButtons.contains(.next)),
+                ("정지", onStop, pressedButtons.contains(.stop)),
+            ]
 
-            ZStack {
-                TapeImage()
+            ZStack(alignment: .top) {
+                // ── 카세트 본체 (tape_N2) ──
+                ZStack {
+                    TapeImage()
+                        .frame(width: width, height: cassetteHeight)
 
-                CassetteReelPair(isPlaying: isPlaying)
+                    CassetteReelPair(isPlaying: isPlaying)
+                        .allowsHitTesting(false)
+
+                    CassetteSideBadge(side: cassetteSide)
+                        .frame(width: width * (72.0 / 930.0), height: cassetteHeight * (62.0 / 637.0))
+                        .position(x: width * (116.0 / 930.0) - 2, y: cassetteHeight * (261.0 / 637.0) - 3)
+                        .allowsHitTesting(false)
+
+                    let artistName = track?.artistName ?? "-"
+                    VStack(alignment: .center, spacing: 2 * scale) {
+                        CassetteHandwrittenText(
+                            text: track?.title ?? "No Track",
+                            size: 19 * scale,
+                            isTitle: true,
+                            color: Color(hex: 0x25211B),
+                            minimumScaleFactor: 0.68
+                        )
+
+                        CassetteHandwrittenText(
+                            text: artistName,
+                            size: 16 * scale,
+                            isTitle: false,
+                            color: Color(hex: 0x25211B).opacity(0.8),
+                            minimumScaleFactor: 0.7,
+                            koreanSizeBoost: 2
+                        )
+                            .offset(y: -2 * scale + (artistName.containsHangul ? 2 : 3))
+                    }
+                    .frame(width: width * 0.52, alignment: .center)
+                    .multilineTextAlignment(.center)
+                    .position(x: width * 0.51, y: cassetteHeight * (130.0 / 637.0))
+
+                    VStack(alignment: .leading, spacing: 2 * scale) {
+                        Text(album?.title ?? "No Album")
+                            .font(Font.custom("Paperlogy-7Bold", size: 11 * scale))
+                            .foregroundStyle(Color(hex: 0x25211B))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.58)
+
+                        Text(albumDetailText)
+                            .font(Font.custom("Paperlogy-5Medium", size: 8 * scale))
+                            .foregroundStyle(Color(hex: 0x25211B).opacity(0.65))
+                            .lineLimit(1)
+                    }
+                    // 하단 크림 스트라이프(파란네모 위치). 좌측 장식선 오른쪽에서 좌측정렬 시작.
+                    .frame(width: width * (470.0 / 930.0), alignment: .leading)
+                    .position(x: width * (445.0 / 930.0), y: cassetteHeight * (434.0 / 637.0))
                     .allowsHitTesting(false)
-
-                CassetteSideBadge(side: cassetteSide)
-                    .frame(width: width * (80.0 / 930.0), height: width * (80.0 / 930.0))
-                    .position(x: width * (146.0 / 930.0), y: height * (130.0 / 787.0))
-                    .allowsHitTesting(false)
-
-                VStack(alignment: .leading, spacing: compact ? 0 : 2) {
-                    Text(track?.title ?? "No Track")
-                        .font(Font.custom("Cafe24PROSlimAir", size: compact ? 17 : 19))
-                        .foregroundStyle(Color(hex: 0x25211B))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.68)
-
-                    Text(track?.artistName ?? "MonoSync")
-                        .font(Font.custom("Cafe24PROSlimAir", size: compact ? 14 : 16))
-                        .foregroundStyle(Color(hex: 0x25211B).opacity(0.8))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
                 }
-                .rotationEffect(.degrees(-2))
-                .frame(width: width * 0.52, alignment: .leading)
-                .position(x: width * 0.51, y: height * 0.165)
+                .frame(width: width, height: cassetteHeight)
+                .clipped()
+                .offset(x: slideOffset + dragOffset)
+                .contentShape(Rectangle())
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 18)
+                        .onChanged { value in
+                            guard !isSlidingSide else { return }
+                            let horizontal = value.translation.width
+                            let vertical = value.translation.height
+                            guard abs(horizontal) > abs(vertical) * 1.15 else { return }
+                            dragOffset = horizontal
+                        }
+                        .onEnded { value in
+                            guard !isSlidingSide else { return }
+                            let horizontal = value.translation.width
+                            let vertical = value.translation.height
+                            // 위로 스와이프 → 서랍 그리드를 앨범아트로 전환.
+                            if vertical < -44, abs(vertical) > abs(horizontal) * 1.25 {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
+                                    dragOffset = 0
+                                }
+                                onSwipeUp()
+                                return
+                            }
+                            let threshold = max(width * 0.38, 120)
+                            guard abs(horizontal) > threshold, abs(horizontal) > abs(vertical) * 1.25 else {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
+                                    dragOffset = 0
+                                }
+                                return
+                            }
+                            slideToNextSide(width: width, direction: horizontal < 0 ? -1 : 1)
+                        }
+                )
 
-                VStack(alignment: .leading, spacing: compact ? 0 : 2) {
-                    Text(album?.title ?? "MonoSync")
-                        .font(Font.custom("Paperlogy-7Bold", size: compact ? 14 : 16))
-                        .foregroundStyle(MonoTheme.paper.opacity(0.92))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.58)
+                // ── 버튼 스트립 (Button_N5) ──
+                // 정적 베이스(테두리·여백·하단 본체)를 깔고, 그 위에 각 버튼 "면"만
+                // 점선 박스 좌표에 정확히 맞춰 올립니다. 눌리면 면만 박스 안에서 내려갑니다.
+                if !isLandscape {
+                    ZStack(alignment: .topLeading) {
+                        ButtonStripImage()
+                            .frame(width: width, height: buttonStripHeight)
+                            .allowsHitTesting(false)
 
-                    Text(album?.releaseYear ?? "연도 미상")
-                        .font(Font.custom("Paperlogy-5Medium", size: compact ? 9 : 10))
-                        .foregroundStyle(MonoTheme.mist.opacity(0.9))
-                        .lineLimit(1)
+                        ForEach(Array(transportButtons.enumerated()), id: \.offset) { index, button in
+                            let box = CassetteButtonGeometry.boxes[index]
+                            CassetteButtonFace(
+                                stripWidth: width,
+                                stripHeight: buttonStripHeight,
+                                box: box,
+                                isLatched: button.isLatched,
+                                action: button.action,
+                                label: button.label
+                            )
+                        }
+                    }
+                    .frame(width: width, height: buttonStripHeight, alignment: .topLeading)
+                    .offset(y: cassetteHeight)
                 }
-                .frame(width: width * (520.0 / 930.0), alignment: .leading)
-                .position(x: width * (370.0 / 930.0), y: height * (486.0 / 787.0))
-                .allowsHitTesting(false)
-
-                HStack(spacing: 0) {
-                    CassettePressZone(
-                        action: onBack,
-                        label: "이전 곡",
-                        isLatched: pressedButtons.contains(.previous)
-                    )
-                    CassettePressZone(
-                        action: onPlay,
-                        label: "재생",
-                        isLatched: pressedButtons.contains(.play)
-                    )
-                    CassettePressZone(
-                        action: onPause,
-                        label: "일시정지",
-                        isLatched: pressedButtons.contains(.pause)
-                    )
-                    CassettePressZone(
-                        action: onNext,
-                        label: "다음 곡",
-                        isLatched: pressedButtons.contains(.next)
-                    )
-                    CassettePressZone(
-                        action: onStop,
-                        label: "정지",
-                        isLatched: pressedButtons.contains(.stop)
-                    )
-                }
-                .frame(width: buttonRowWidth, height: buttonRowHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 3))
-                .position(x: width * 0.5, y: buttonRowCenterY)
-
-                CassettePressZone(action: onOpenTools)
-                    .frame(width: width * 0.18, height: height * 0.13)
-                    .position(x: width * 0.87, y: height * 0.62)
-                    .accessibilityLabel("카세트 면 넘기기")
             }
+            // ZStack을 덱 전체 높이로 채워, 아래로 내려간 버튼 키도 터치 영역 안에 들어오게 합니다.
+            .frame(width: width, height: height, alignment: .top)
+            .contentShape(Rectangle())
         }
         .shadow(color: .black.opacity(0.28), radius: 8, y: 4)
+    }
+
+    private func slideToNextSide(width: CGFloat, direction: CGFloat) {
+        guard !isSlidingSide else { return }
+        isSlidingSide = true
+        SoundEffectPlayer.shared.play(.insert)
+
+        withAnimation(.easeInOut(duration: 0.18)) {
+            dragOffset = 0
+            slideOffset = direction * width
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            onOpenTools()
+            slideOffset = -direction * width
+            withAnimation(.easeOut(duration: 0.22)) {
+                slideOffset = 0
+            }
+            try? await Task.sleep(for: .milliseconds(220))
+            isSlidingSide = false
+        }
+    }
+}
+
+private struct CassetteHandwrittenText: View {
+    let text: String
+    let size: CGFloat
+    let isTitle: Bool
+    let color: Color
+    let minimumScaleFactor: CGFloat
+    var koreanSizeBoost: CGFloat = 0
+
+    @ViewBuilder
+    var body: some View {
+        if isTitle {
+            ZStack {
+                styledText
+                styledText.offset(x: boldOffset)
+                styledText.offset(y: boldOffset)
+            }
+        } else {
+            styledText
+        }
+    }
+
+    private var styledText: some View {
+        renderedText
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .minimumScaleFactor(minimumScaleFactor)
+    }
+
+    private var boldOffset: CGFloat {
+        max(0.32, size * 0.018)
+    }
+
+    private var renderedText: Text {
+        scriptRuns.reduce(Text("")) { partial, run in
+            let boostedSize = run.isKorean ? (size + koreanSizeBoost) : size
+            let tracking: CGFloat = run.isKorean ? 1.2 : 0
+            return partial + Text(run.text)
+                .font(font(forKorean: run.isKorean, size: boostedSize))
+                .tracking(tracking)
+        }
+    }
+
+    private var scriptRuns: [(text: String, isKorean: Bool)] {
+        var runs: [(String, Bool)] = []
+        var current = ""
+        var currentIsKorean = false
+        var hasCurrentScript = false
+
+        for character in text {
+            let characterIsKorean = character.containsHangul
+            let characterHasScript = character.isScriptCharacter
+            let nextIsKorean = characterHasScript ? characterIsKorean : currentIsKorean
+
+            if hasCurrentScript, characterHasScript, nextIsKorean != currentIsKorean {
+                runs.append((current, currentIsKorean))
+                current = ""
+            }
+
+            current.append(character)
+            if characterHasScript {
+                currentIsKorean = nextIsKorean
+                hasCurrentScript = true
+            }
+        }
+
+        if !current.isEmpty {
+            runs.append((current, currentIsKorean))
+        }
+
+        return runs
+    }
+
+    private func font(forKorean isKorean: Bool, size: CGFloat) -> Font {
+        let fontName = isKorean ? "NanumGangBuJangNimCe" : "UwU-Regular"
+        return Font.custom(fontName, size: size)
+    }
+}
+
+private extension String {
+    var containsHangul: Bool {
+        contains { $0.containsHangul }
+    }
+}
+
+private extension Character {
+    var containsHangul: Bool {
+        unicodeScalars.contains { scalar in
+            (0xAC00...0xD7A3).contains(Int(scalar.value)) ||
+            (0x1100...0x11FF).contains(Int(scalar.value)) ||
+            (0x3130...0x318F).contains(Int(scalar.value)) ||
+            (0xA960...0xA97F).contains(Int(scalar.value)) ||
+            (0xD7B0...0xD7FF).contains(Int(scalar.value))
+        }
+    }
+
+    var isScriptCharacter: Bool {
+        unicodeScalars.contains { CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0) }
     }
 }
 
@@ -424,14 +680,12 @@ private struct CassetteSideBadge: View {
     let side: CassetteSide
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 8)
-            .fill(Color(hex: 0x171717))
-            .overlay {
-                Text(side == .a ? "A" : "B")
-                    .font(Font.custom("Paperlogy-7Bold", size: 42))
-                    .foregroundStyle(Color(hex: 0xD8D3C7))
-                    .minimumScaleFactor(0.5)
-            }
+        // 검은 배경 없이 글자만. TYPE I 박스(노란점 위치) 안에 들어갑니다.
+        Text(side == .a ? "A" : "B")
+            .font(Font.custom("Paperlogy-7Bold", size: 34))
+            .foregroundStyle(Color(hex: 0xD8D3C7))
+            .minimumScaleFactor(0.5)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -444,14 +698,15 @@ private struct CassetteReelPair: View {
             let height = proxy.size.height
             let reelSize = width * (132.0 / 930.0)
 
+            // tape_N2(930x637)의 두 릴 구멍 중심(측정값).
             ZStack {
                 RotatingReel(isPlaying: isPlaying)
                     .frame(width: reelSize, height: reelSize)
-                    .position(x: width * (242.0 / 930.0), y: height * (320.0 / 787.0))
+                    .position(x: width * (237.0 / 930.0) + 5 + 2 - 1, y: height * (303.0 / 637.0) - 7 - 2)
 
                 RotatingReel(isPlaying: isPlaying)
                     .frame(width: reelSize, height: reelSize)
-                    .position(x: width * (692.0 / 930.0), y: height * (320.0 / 787.0))
+                    .position(x: width * (679.0 / 930.0) - 3 - 2 + 1, y: height * (303.0 / 637.0) - 7 - 2)
             }
         }
     }
@@ -512,11 +767,13 @@ private struct ReelImage: View {
 }
 
 private struct TapeImage: View {
+    @Environment(AppModel.self) private var appModel
+
     var body: some View {
-        if let image = UIImage(named: "tape_full") {
+        if let image = UIImage(named: appModel.selectedTapeStyle.rawValue) {
             Image(uiImage: image)
                 .resizable()
-                .scaledToFit()
+                .scaledToFill()
         } else {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color(hex: 0x101010))
@@ -529,32 +786,113 @@ private struct TapeImage: View {
     }
 }
 
-private struct CassettePressZone: View {
+private struct ButtonStripImage: View {
+    var body: some View {
+        if let image = UIImage(named: "Button_N5") {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+        } else {
+            Rectangle().fill(Color.black)
+        }
+    }
+}
+
+/// Button_N5(930×552) 위 빨간 점선으로 표시된 버튼 박스 좌표(픽셀 단위).
+/// 면 세로: 상단 점선 y=22, 하단 점선 y=240.  좌우 경계: 34/210/387/561/735/909.
+private enum CassetteButtonGeometry {
+    static let imageWidthPx: CGFloat = 930
+    static let faceTopPx: CGFloat = 22       // 버튼 면 상단 점선
+    static let faceBottomPx: CGFloat = 240   // 버튼 면 하단 점선
+    static var faceHeightPx: CGFloat { faceBottomPx - faceTopPx }  // 218
+
+    struct Box { let leftPx: CGFloat; let rightPx: CGFloat }
+
+    static let boxes: [Box] = [
+        .init(leftPx: 34,  rightPx: 210),   // 이전 곡
+        .init(leftPx: 210, rightPx: 387),   // 재생
+        .init(leftPx: 387, rightPx: 561),   // 일시정지
+        .init(leftPx: 561, rightPx: 735),   // 다음 곡
+        .init(leftPx: 735, rightPx: 909),   // 정지
+    ]
+}
+
+/// 버튼 한 칸의 "면"만 렌더링·이동. 점선 박스 좌표에 정확히 맞춰 위치하고,
+/// 누르면 면만 박스 안에서 아래로 내려갑니다(주변 테두리·여백은 정적 베이스가 담당).
+private struct CassetteButtonFace: View {
+    let stripWidth: CGFloat   // 버튼 이미지를 그릴 폭(=930px에 대응)
+    let stripHeight: CGFloat
+    let box: CassetteButtonGeometry.Box
+    let isLatched: Bool
     let action: () -> Void
-    var label = "카세트 버튼"
-    var isLatched = false
+    let label: String
 
     var body: some View {
+        let s = stripWidth / CassetteButtonGeometry.imageWidthPx  // px → pt 스케일
+        let boxLeft = box.leftPx * s
+        let boxWidth = (box.rightPx - box.leftPx) * s
+        let faceTop = CassetteButtonGeometry.faceTopPx * s
+        let faceHeight = CassetteButtonGeometry.faceHeightPx * s
+
         Button {
             CassetteFeedbackPlayer.shared.impact()
             SoundEffectPlayer.shared.play(.button)
             action()
         } label: {
             Rectangle()
-                .fill(Color.white.opacity(0.001))
-                .overlay(alignment: .top) {
-                    if isLatched {
-                        Circle()
-                            .fill(MonoTheme.accent)
-                            .frame(width: 8, height: 8)
-                            .padding(.top, 10)
-                            .shadow(color: MonoTheme.accent.opacity(0.55), radius: 3)
-                    }
-                }
+                .fill(Color.white.opacity(0.001))  // 확실히 hit-test 되는 투명 면
+                .frame(width: boxWidth, height: faceHeight)
         }
-        .buttonStyle(CassetteButtonStyle())
-        .contentShape(Rectangle())
+        .buttonStyle(CassetteFaceStyle(
+            stripWidth: stripWidth,
+            stripHeight: stripHeight,
+            boxLeft: boxLeft,
+            boxWidth: boxWidth,
+            faceTop: faceTop,
+            faceHeight: faceHeight,
+            isLatched: isLatched
+        ))
+        // 박스 좌상단을 스트립 좌상단 기준으로 정확히 배치.
+        .frame(width: boxWidth, height: faceHeight, alignment: .topLeading)
+        .position(x: boxLeft + boxWidth / 2, y: faceTop + faceHeight / 2)
         .accessibilityLabel(label)
+    }
+}
+
+private struct CassetteFaceStyle: ButtonStyle {
+    let stripWidth: CGFloat
+    let stripHeight: CGFloat
+    let boxLeft: CGFloat
+    let boxWidth: CGFloat
+    let faceTop: CGFloat
+    let faceHeight: CGFloat
+    let isLatched: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        let pressDepth = faceHeight * 0.12  // 면 높이의 12%만큼 내려감
+        let isDown = isLatched || configuration.isPressed
+        let yShift = isDown ? pressDepth : 0
+
+        ZStack(alignment: .topLeading) {
+            // 버튼 면 슬라이스: 전체 이미지를 박스 좌상단으로 끌어와 박스 크기로 잘라냄.
+            // 누르면 yShift 만큼 아래로 → 위쪽에 어두운 틈이 생겨 "눌려 들어간" 모습.
+            ButtonStripImage()
+                .frame(width: stripWidth, height: stripHeight)
+                .offset(x: -boxLeft, y: -faceTop + yShift)
+                .frame(width: boxWidth, height: faceHeight, alignment: .topLeading)
+                .clipped()
+                .allowsHitTesting(false)
+
+            // 눌린 상태 음영(면 위에만).
+            Rectangle()
+                .fill(Color.black.opacity(isDown ? 0.18 : 0))
+                .frame(width: boxWidth, height: faceHeight)
+                .allowsHitTesting(false)
+
+            configuration.label
+        }
+        .frame(width: boxWidth, height: faceHeight, alignment: .topLeading)
+        .animation(.easeOut(duration: 0.08), value: isDown)
     }
 }
 
@@ -575,18 +913,6 @@ private final class CassetteFeedbackPlayer {
         lastImpactAt = now
         generator.impactOccurred(intensity: 0.9)
         generator.prepare()
-    }
-}
-
-private struct CassetteButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .overlay {
-                Rectangle()
-                    .fill(Color.white.opacity(configuration.isPressed ? 0.1 : 0))
-            }
-            .scaleEffect(y: configuration.isPressed ? 0.9 : 1, anchor: .bottom)
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
     }
 }
 

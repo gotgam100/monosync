@@ -1,5 +1,6 @@
 import Foundation
 import MusicKit
+import SwiftUI
 
 enum CassetteTransportButton: Hashable, Sendable {
     case previous
@@ -9,15 +10,41 @@ enum CassetteTransportButton: Hashable, Sendable {
     case stop
 }
 
+enum CassetteTapeStyle: String, CaseIterable, Identifiable, Codable, Sendable {
+    case n3 = "tape_N3"
+    case n2 = "tape_N2"
+
+    var id: String { rawValue }
+
+    var name: String {
+        switch self {
+        case .n3: "Orange"
+        case .n2: "DeepGreen"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .n3: "따뜻한 오렌지색 테이프"
+        case .n2: "깊은 녹색의 모던한 테이프"
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class AppModel {
     let musicService: AppleMusicServicing
     let spaceStore: SpaceStoring
+    let stationStore: StationStoring
+    let authProvider: AuthProviding
+    let friendStore: FriendStoring
 
     var currentUser: MonoUser
     var mySpace: ListeningSpace
     var friendSpaces: [ListeningSpace]
+    var isSignedIn = false
+    var sessionStatusText = ""
     var selectedLanguage: AppLanguage
     var musicStatusText = "애플뮤직 연결 전"
     var isMusicPlaybackActive = false
@@ -25,13 +52,47 @@ final class AppModel {
     var albumSearchResults: [AlbumSnapshot] = []
     var isSearchingTracks = false
     var searchStatusText = "곡 제목이나 아티스트로 앨범을 찾아보세요"
-    var drawerAlbums: [AlbumSnapshot] = []
-    var cassetteSideA: AlbumSnapshot?
-    var cassetteSideB: AlbumSnapshot?
-    var selectedCassetteSide: CassetteSide = .a
+    var drawerAlbums: [AlbumSnapshot] = [] {
+        didSet { persistDrawerStateIfNeeded() }
+    }
+    var albumMemos: [String: AlbumMemo] = [:] {
+        didSet { persistDrawerStateIfNeeded() }
+    }
+    var recentSearchTerms: [String] = [] {
+        didSet { persistDrawerStateIfNeeded() }
+    }
+    var cassetteSideA: AlbumSnapshot? {
+        didSet { persistDrawerStateIfNeeded() }
+    }
+    var cassetteSideB: AlbumSnapshot? {
+        didSet { persistDrawerStateIfNeeded() }
+    }
+    var selectedCassetteSide: CassetteSide = .a {
+        didSet { persistDrawerStateIfNeeded() }
+    }
+    var selectedTapeStyle: CassetteTapeStyle = .n3 {
+        didSet { persistDrawerStateIfNeeded() }
+    }
+    var sideATrackIndex: Int? {
+        didSet { persistDrawerStateIfNeeded() }
+    }
+    var sideBTrackIndex: Int? {
+        didSet { persistDrawerStateIfNeeded() }
+    }
+    var sideAPosition: TimeInterval = 0 {
+        didSet { persistDrawerStateIfNeeded() }
+    }
+    var sideBPosition: TimeInterval = 0 {
+        didSet { persistDrawerStateIfNeeded() }
+    }
     var activeCassetteSide: CassetteSide?
     var activeCassetteTrackIndex: Int?
     var pressedCassetteButtons: Set<CassetteTransportButton> = []
+    /// 플레이어 상단 영역 모드. true = 서랍 그리드, false = 삽입된 앨범아트.
+    /// 앨범을 테이프에 넣으면 false(앨범아트), 앨범아트를 아래로 스와이프하면 true(서랍).
+    var prefersDrawerGrid = true
+    var selectedSection: MonoSection = .space
+    var showSubscriptionAlert = false
     var libraryPlaylists: [MusicCollectionSnapshot] = []
     var recentlyPlayedTracks: [TrackSnapshot] = []
     var monoPlaylists: [MonoPlaylist] = [.sample]
@@ -41,14 +102,26 @@ final class AppModel {
     var activeMonoPlaylistTrackID: TrackSnapshot.ID?
     var isLoadingAppleMusicShelf = false
     var appleMusicShelfStatusText = "Apple Music 보관함을 불러올 수 있어요"
+    
+    var yourStationNavigationPath = NavigationPath()
 
     private var playerSyncTask: Task<Void, Never>?
     private var lastPublishedSnapshot: MusicPlayerSnapshot?
     private var isTransportStoppedManually = false
+    var showDeleteActiveAlbumAlert = false
     private var isHandlingPauseButton = false
     private var searchGeneration = 0
     private var playlistLoadGeneration = 0
     private var shelfOperationGeneration = 0
+    var drawerFocusTrigger = 0
+    var drawerSnapTrigger = 0
+    private var isRestoringPersistedDrawerState = false
+    private let drawerPersistenceKey = "MonoSync.drawerState.v1"
+    private var friendSessionTask: Task<Void, Never>?
+    private var friendIDsTask: Task<Void, Never>?
+    private var spaceListenTask: Task<Void, Never>?
+    private var friendSpacesByID: [String: ListeningSpace] = [:]
+    private var didStartFriendSession = false
 
     var isCassetteTransportZero: Bool {
         pressedCassetteButtons.isEmpty
@@ -62,24 +135,61 @@ final class AppModel {
         self.musicService = AppleMusicService()
         #if canImport(FirebaseFirestore)
         self.spaceStore = FirestoreSpaceStore()
+        self.friendStore = FirestoreFriendStore()
+        self.stationStore = FirestoreStationStore()
         #else
         self.spaceStore = InMemorySpaceStore()
+        self.friendStore = NoOpFriendStore()
+        self.stationStore = NoOpStationStore()
+        #endif
+        #if canImport(FirebaseAuth)
+        self.authProvider = FirebaseAuthProvider()
+        #else
+        self.authProvider = NoOpAuthProvider()
         #endif
         self.currentUser = .sampleMe
         self.mySpace = .sampleMe
         self.friendSpaces = ListeningSpace.sampleFriends
         self.selectedLanguage = .korean
         self.selectedMonoPlaylistID = self.monoPlaylists.first?.id
+        restorePersistedDrawerState()
+        if let savedDesc = UserDefaults.standard.string(forKey: "MonoSync.myStationDescription") {
+            self.mySpace.stationDescription = savedDesc
+        }
+        if let savedTitle = UserDefaults.standard.string(forKey: "MonoSync.myStationTitle") {
+            self.mySpace.title = savedTitle
+        }
+
+        // 앱 시작 시 항상 일반 플레이어창으로 시작되게 설정
+        prefersDrawerGrid = false
     }
 
-    init(musicService: AppleMusicServicing, spaceStore: SpaceStoring) {
+    init(
+        musicService: AppleMusicServicing,
+        spaceStore: SpaceStoring,
+        stationStore: StationStoring = NoOpStationStore(),
+        authProvider: AuthProviding = NoOpAuthProvider(),
+        friendStore: FriendStoring = NoOpFriendStore()
+    ) {
         self.musicService = musicService
         self.spaceStore = spaceStore
+        self.stationStore = stationStore
+        self.authProvider = authProvider
+        self.friendStore = friendStore
         self.currentUser = .sampleMe
         self.mySpace = .sampleMe
         self.friendSpaces = ListeningSpace.sampleFriends
         self.selectedLanguage = .korean
         self.selectedMonoPlaylistID = self.monoPlaylists.first?.id
+        restorePersistedDrawerState()
+        if let savedDesc = UserDefaults.standard.string(forKey: "MonoSync.myStationDescription") {
+            self.mySpace.stationDescription = savedDesc
+        }
+        if let savedTitle = UserDefaults.standard.string(forKey: "MonoSync.myStationTitle") {
+            self.mySpace.title = savedTitle
+        }
+        // 앱 시작 시 항상 일반 플레이어창으로 시작되게 설정
+        prefersDrawerGrid = false
     }
 
     @MainActor
@@ -87,6 +197,15 @@ final class AppModel {
         let status = await musicService.requestAuthorization()
         updateMusicStatus(status: status)
         startPlayerSync()
+    }
+
+    @MainActor
+    func checkAppleMusicSubscriptionAndAccess() async {
+        let status = await musicService.requestAuthorization()
+        updateMusicStatus(status: status)
+        if status != .authorized || !musicService.canPlayCatalogContent {
+            showSubscriptionAlert = true
+        }
     }
 
     @MainActor
@@ -103,7 +222,7 @@ final class AppModel {
     }
 
     @MainActor
-    func searchTracks(term: String) async {
+    func searchTracks(term: String, saveRecentSearch: Bool = false) async {
         let trimmedTerm = term.trimmingCharacters(in: .whitespacesAndNewlines)
         searchGeneration += 1
         let generation = searchGeneration
@@ -130,22 +249,50 @@ final class AppModel {
             guard generation == searchGeneration else { return }
             searchStatusText = musicPlaybackFailureMessage(for: error)
         }
+        
+        if saveRecentSearch && !albumSearchResults.isEmpty {
+            addRecentSearchTerm(trimmedTerm)
+        }
+        
         guard generation == searchGeneration else { return }
         isSearchingTracks = false
     }
 
+    private func addRecentSearchTerm(_ term: String) {
+        recentSearchTerms.removeAll(where: { $0.caseInsensitiveCompare(term) == .orderedSame })
+        recentSearchTerms.insert(term, at: 0)
+        if recentSearchTerms.count > 10 {
+            recentSearchTerms.removeLast()
+        }
+    }
+
     @MainActor
-    func addAlbumToDrawer(_ album: AlbumSnapshot) {
+    func addAlbumToDrawer(_ album: AlbumSnapshot, updateSearchStatus: Bool = true) {
         if drawerAlbums.contains(where: { $0.id == album.id }) {
-            searchStatusText = "이미 내 서랍에 있는 앨범이에요"
-            appleMusicShelfStatusText = searchStatusText
+            if updateSearchStatus {
+                searchStatusText = "이미 내 서랍에 있는 앨범이에요"
+            }
+            appleMusicShelfStatusText = "이미 내 서랍에 있는 앨범이에요"
             return
         }
 
         drawerAlbums.insert(album, at: 0)
-        searchStatusText = "\(album.title)을 내 서랍에 넣었어요"
-        appleMusicShelfStatusText = searchStatusText
+        if updateSearchStatus {
+            searchStatusText = "\(album.title)을 내 서랍에 넣었어요"
+        }
+        appleMusicShelfStatusText = "\(album.title)을 내 서랍에 넣었어요"
     }
+    @MainActor
+    func moveDrawerAlbum(from sourceId: String, to destinationId: String) {
+        guard let sourceIndex = drawerAlbums.firstIndex(where: { $0.id == sourceId }),
+              let destinationIndex = drawerAlbums.firstIndex(where: { $0.id == destinationId }),
+              sourceIndex != destinationIndex else {
+            return
+        }
+        let item = drawerAlbums.remove(at: sourceIndex)
+        drawerAlbums.insert(item, at: destinationIndex)
+    }
+
 
     /// 검색 앨범은 트랙이 비어 있으므로, 담는 시점에 곡을 즉시 로드해 채웁니다.
     /// (앨범 단위 일괄 해석을 재생 시점에 하지 않도록 통일)
@@ -156,12 +303,17 @@ final class AppModel {
             return
         }
 
-        var resolved = album
-        if resolved.tracks.isEmpty {
+        addAlbumToDrawer(album)
+
+        if album.tracks.isEmpty {
             searchStatusText = "\(album.title) 곡 불러오는 중"
-            resolved.tracks = (try? await musicService.tracks(in: album)) ?? []
+            Task {
+                let fetchedTracks = (try? await musicService.tracks(in: album)) ?? []
+                if let index = drawerAlbums.firstIndex(where: { $0.id == album.id }) {
+                    drawerAlbums[index].tracks = fetchedTracks
+                }
+            }
         }
-        addAlbumToDrawer(resolved)
     }
 
     @MainActor
@@ -173,12 +325,16 @@ final class AppModel {
         switch side {
         case .a:
             cassetteSideA = album
+            sideATrackIndex = 0
+            sideAPosition = 0
         case .b:
             cassetteSideB = album
+            sideBTrackIndex = 0
+            sideBPosition = 0
         }
         selectedCassetteSide = side
-        activeCassetteSide = nil
-        activeCassetteTrackIndex = nil
+        activeCassetteSide = side
+        activeCassetteTrackIndex = 0
         isMusicPlaybackActive = false
         isTransportStoppedManually = true
         pressedCassetteButtons = []
@@ -195,8 +351,15 @@ final class AppModel {
             )
         }
         SoundEffectPlayer.shared.play(.insert)
+        // 삽입되면 상단을 앨범아트로 전환(서랍 그리드 접기).
+        prefersDrawerGrid = false
         appleMusicShelfStatusText = "\(album.title)을 \(side.title)에 넣었어요"
         musicStatusText = "\(side.title) · \(album.title) 준비됨"
+    }
+
+    /// 상단 영역에 서랍 그리드를 표시할지 여부.
+    var showsAlbumArt: Bool {
+        selectedCassetteAlbum != nil && !prefersDrawerGrid
     }
 
     @MainActor
@@ -207,12 +370,26 @@ final class AppModel {
 
     @MainActor
     func deleteDrawerAlbum(_ album: AlbumSnapshot) {
-        drawerAlbums.removeAll { $0.id == album.id }
-        if cassetteSideA?.id == album.id {
-            cassetteSideA = nil
+        deleteDrawerAlbum(id: album.id, title: album.title)
+    }
+
+    @MainActor
+    func deleteDrawerAlbum(id: AlbumSnapshot.ID, title: String? = nil) {
+        if isMusicPlaybackActive && (cassetteSideA?.id == id || cassetteSideB?.id == id) {
+            showDeleteActiveAlbumAlert = true
+            return
         }
-        if cassetteSideB?.id == album.id {
+
+        drawerAlbums.removeAll { $0.id == id }
+        if cassetteSideA?.id == id {
+            cassetteSideA = nil
+            sideATrackIndex = nil
+            sideAPosition = 0
+        }
+        if cassetteSideB?.id == id {
             cassetteSideB = nil
+            sideBTrackIndex = nil
+            sideBPosition = 0
         }
         if selectedCassetteAlbum == nil {
             activeCassetteSide = nil
@@ -222,7 +399,7 @@ final class AppModel {
             mySpace.playbackStartedAt = nil
             mySpace.positionAtAnchor = 0
         }
-        appleMusicShelfStatusText = "\(album.title)을 내 서랍에서 지웠어요"
+        appleMusicShelfStatusText = "\((title ?? "앨범"))을 내 서랍에서 지웠어요"
         musicStatusText = "내 서랍 정리됨"
     }
 
@@ -265,6 +442,13 @@ final class AppModel {
             isMusicPlaybackActive = true
             activeCassetteSide = selectedCassetteSide
             activeCassetteTrackIndex = safeStartIndex
+            if selectedCassetteSide == .a {
+                sideATrackIndex = safeStartIndex
+                sideAPosition = startTime
+            } else {
+                sideBTrackIndex = safeStartIndex
+                sideBPosition = startTime
+            }
             clearActiveMonoPlaylist()
             await publish(.started(track: firstTrack, position: startTime, at: .now))
             lastPublishedSnapshot = MusicPlayerSnapshot(
@@ -286,9 +470,61 @@ final class AppModel {
     }
 
     @MainActor
-    func flipCassetteSide() {
+    func flipCassetteSide() async {
+        let currentSide = selectedCassetteSide
+        let currentPos = currentPlaybackPosition()
+        let currentIndex = activeCassetteTrackIndex ?? (mySpace.currentTrack.flatMap { track in
+            album(for: currentSide)?.tracks.firstIndex(where: { $0.matches(track) })
+        } ?? 0)
+        
+        if currentSide == .a {
+            sideATrackIndex = currentIndex
+            sideAPosition = currentPos
+        } else {
+            sideBTrackIndex = currentIndex
+            sideBPosition = currentPos
+        }
+
+        if isMusicPlaybackActive || !pressedCassetteButtons.isEmpty {
+            await stopCurrentTrack(resetPosition: true)
+        }
+
         selectedCassetteSide = selectedCassetteSide == .a ? .b : .a
-        musicStatusText = "\(selectedCassetteSide.title) 선택됨"
+        isMusicPlaybackActive = false
+        isTransportStoppedManually = true
+        pressedCassetteButtons = []
+
+        if let album = album(for: selectedCassetteSide) {
+            let targetIndex = (selectedCassetteSide == .a ? sideATrackIndex : sideBTrackIndex) ?? 0
+            let safeIndex = album.tracks.indices.contains(targetIndex) ? targetIndex : 0
+            let track = album.tracks[safeIndex]
+            let targetPosition = (selectedCassetteSide == .a ? sideAPosition : sideBPosition)
+            
+            activeCassetteSide = selectedCassetteSide
+            activeCassetteTrackIndex = safeIndex
+            
+            mySpace.currentTrack = track
+            mySpace.playbackState = .idle
+            mySpace.playbackStartedAt = nil
+            mySpace.positionAtAnchor = targetPosition
+            mySpace.updatedAt = .now
+            
+            lastPublishedSnapshot = MusicPlayerSnapshot(
+                track: track,
+                position: targetPosition,
+                playbackState: .idle
+            )
+            musicStatusText = "\(selectedCassetteSide.title) · \(album.title) 준비됨"
+        } else {
+            activeCassetteSide = nil
+            activeCassetteTrackIndex = nil
+            mySpace.currentTrack = nil
+            mySpace.playbackState = .idle
+            mySpace.playbackStartedAt = nil
+            mySpace.positionAtAnchor = 0
+            mySpace.updatedAt = .now
+            musicStatusText = "\(selectedCassetteSide.title)에 앨범이 없어요"
+        }
     }
 
     @MainActor
@@ -409,13 +645,9 @@ final class AppModel {
             return
         }
 
-        if pressedCassetteButtons == [.stop] {
-            await releaseCassetteTransport()
-            return
-        }
-
         pressedCassetteButtons = [.stop]
         await stopCurrentTrack(resetPosition: true)
+        pressedCassetteButtons = []
     }
 
     @MainActor
@@ -563,36 +795,21 @@ final class AppModel {
         let generation = shelfOperationGeneration
         isLoadingAppleMusicShelf = true
         appleMusicShelfStatusText = "\(playlist.title) 가져오는 중"
-        watchShelfOperation(generation: generation, message: "플레이리스트 응답이 늦어요. 잠시 뒤 다시 시도해 주세요.")
 
-        // 친구 곡 경로처럼 가져오는 시점에 곡을 즉시 해석해 둡니다. 빈 껍데기 앨범으로 넣고
-        // 재생 시점에 앨범 단위로 펼치는 방식은 콜드 상태에서 트랙이 안 뜨고 A면에도
-        // 들어가지 않아, 일반 트랙들로 이뤄진 앨범으로 통일합니다.
-        do {
-            let tracks = try await musicService.tracks(in: playlist)
-            guard generation == shelfOperationGeneration else { return }
-            guard !tracks.isEmpty else {
-                appleMusicShelfStatusText = "가져올 곡이 없어요"
-                isLoadingAppleMusicShelf = false
-                return
-            }
-            let album = AlbumSnapshot(
-                id: "monosync-playlist-album:\(playlist.sourceID)",
-                title: playlist.title,
-                artistName: playlist.subtitle,
-                releaseYear: "플레이리스트",
-                artworkURL: playlist.artworkURL ?? tracks.first?.artworkURL,
-                tracks: tracks
-            )
-            addAlbumToDrawer(album)
-            appleMusicShelfStatusText = "\(playlist.title)을 내 서랍에 넣었어요"
-        } catch let error as AppleMusicPlaybackError {
-            guard generation == shelfOperationGeneration else { return }
-            appleMusicShelfStatusText = error.errorDescription ?? "플레이리스트를 가져오지 못했어요"
-        } catch {
-            guard generation == shelfOperationGeneration else { return }
-            appleMusicShelfStatusText = musicPlaybackFailureMessage(for: error)
-        }
+        // Apple Music 플레이리스트는 일반 앨범과 달리 playlist artwork/tracks가 콜드 상태에서
+        // 늦게 해석될 수 있습니다. 서랍에는 가벼운 참조만 넣고, 실제 곡 큐는 재생 시점에
+        // 원본 플레이리스트에서 직접 불러와 앱이 멈추지 않게 합니다.
+        let album = AlbumSnapshot(
+            id: "monosync-playlist-album:\(playlist.sourceID)",
+            title: playlist.title,
+            artistName: playlist.subtitle,
+            releaseYear: nil,
+            artworkURL: playlist.artworkURL,
+            tracks: []
+        )
+        addAlbumToDrawer(album, updateSearchStatus: false)
+        guard generation == shelfOperationGeneration else { return }
+        appleMusicShelfStatusText = "\(playlist.title)을 내 서랍에 넣었어요"
         guard generation == shelfOperationGeneration else { return }
         isLoadingAppleMusicShelf = false
     }
@@ -725,6 +942,20 @@ final class AppModel {
     }
 
     @MainActor
+    func join(spaceId: String) async {
+        musicStatusText = "공간 정보를 불러오는 중..."
+        do {
+            let space = try await spaceStore.fetchSpace(id: spaceId)
+            await join(space: space)
+        } catch {
+            musicStatusText = "공유된 음악을 찾을 수 없어요"
+            #if DEBUG
+            print("[MonoSync] join(spaceId:) error: \(error)")
+            #endif
+        }
+    }
+
+    @MainActor
     func pauseCurrentTrack(at capturedPosition: TimeInterval? = nil) async {
         guard mySpace.currentTrack != nil else {
             isMusicPlaybackActive = false
@@ -853,6 +1084,13 @@ final class AppModel {
 
         selectedCassetteSide = side
         activeCassetteTrackIndex = nextIndex
+        if side == .a {
+            sideATrackIndex = nextIndex
+            sideAPosition = 0
+        } else {
+            sideBTrackIndex = nextIndex
+            sideBPosition = 0
+        }
         await playSelectedCassetteSide(startingAt: album.tracks[nextIndex])
     }
 
@@ -879,6 +1117,13 @@ final class AppModel {
         selectedCassetteSide = side
         activeCassetteSide = side
         activeCassetteTrackIndex = nextIndex
+        if side == .a {
+            sideATrackIndex = nextIndex
+            sideAPosition = 0
+        } else {
+            sideBTrackIndex = nextIndex
+            sideBPosition = 0
+        }
         let track = album.tracks[nextIndex]
 
         if shouldPlay {
@@ -918,6 +1163,14 @@ final class AppModel {
     private func syncPlayerSnapshot() async {
         let snapshot = musicService.currentSnapshot()
         isMusicPlaybackActive = snapshot.playbackState == .playing
+        if let activeSide = activeCassetteSide {
+            let pos = snapshot.position
+            if activeSide == .a {
+                sideAPosition = pos
+            } else {
+                sideBPosition = pos
+            }
+        }
         if isTransportStoppedManually, snapshot.playbackState == .paused {
             return
         }
@@ -1013,6 +1266,11 @@ final class AppModel {
         }
 
         activeCassetteTrackIndex = index
+        if activeCassetteSide == .a {
+            sideATrackIndex = index
+        } else {
+            sideBTrackIndex = index
+        }
     }
 
     private func isActiveTrack(_ track: TrackSnapshot) -> Bool {
@@ -1069,6 +1327,98 @@ final class AppModel {
         }
     }
 
+    private struct PersistedDrawerState: Codable {
+        var drawerAlbums: [AlbumSnapshot]
+        var cassetteSideA: AlbumSnapshot?
+        var cassetteSideB: AlbumSnapshot?
+        var selectedCassetteSide: CassetteSide
+        var selectedTapeStyle: CassetteTapeStyle?
+        var sideATrackIndex: Int?
+        var sideBTrackIndex: Int?
+        var sideAPosition: TimeInterval?
+        var sideBPosition: TimeInterval?
+        var albumMemoItems: [String: AlbumMemo]?
+        var recentSearchTerms: [String]?
+    }
+
+    private func persistDrawerStateIfNeeded() {
+        guard !isRestoringPersistedDrawerState else { return }
+
+        let state = PersistedDrawerState(
+            drawerAlbums: drawerAlbums,
+            cassetteSideA: cassetteSideA,
+            cassetteSideB: cassetteSideB,
+            selectedCassetteSide: selectedCassetteSide,
+            selectedTapeStyle: selectedTapeStyle,
+            sideATrackIndex: sideATrackIndex,
+            sideBTrackIndex: sideBTrackIndex,
+            sideAPosition: sideAPosition,
+            sideBPosition: sideBPosition,
+            albumMemoItems: albumMemos,
+            recentSearchTerms: recentSearchTerms
+        )
+
+        do {
+            let data = try JSONEncoder().encode(state)
+            UserDefaults.standard.set(data, forKey: drawerPersistenceKey)
+        } catch {
+            NSLog("[MonoSync] 서랍 저장 실패: \(String(describing: error))")
+        }
+    }
+
+    private func restorePersistedDrawerState() {
+        guard let data = UserDefaults.standard.data(forKey: drawerPersistenceKey) else { return }
+
+        do {
+            let state = try JSONDecoder().decode(PersistedDrawerState.self, from: data)
+            isRestoringPersistedDrawerState = true
+            drawerAlbums = state.drawerAlbums
+            cassetteSideA = state.cassetteSideA
+            cassetteSideB = state.cassetteSideB
+            selectedCassetteSide = state.selectedCassetteSide
+            selectedTapeStyle = state.selectedTapeStyle ?? .n2
+            
+            sideATrackIndex = state.sideATrackIndex
+            sideBTrackIndex = state.sideBTrackIndex
+            sideAPosition = state.sideAPosition ?? 0
+            sideBPosition = state.sideBPosition ?? 0
+            albumMemos = state.albumMemoItems ?? [:]
+            recentSearchTerms = state.recentSearchTerms ?? []
+            
+            isRestoringPersistedDrawerState = false
+            
+            // 앱 실행 시 A/B면 복원에 맞춰 현재 트랙 정보 복구
+            if let activeAlbum = state.selectedCassetteSide == .a ? state.cassetteSideA : state.cassetteSideB {
+                let targetIndex = (state.selectedCassetteSide == .a ? state.sideATrackIndex : state.sideBTrackIndex) ?? 0
+                let safeIndex = activeAlbum.tracks.indices.contains(targetIndex) ? targetIndex : 0
+                let targetPosition = (state.selectedCassetteSide == .a ? state.sideAPosition : state.sideBPosition) ?? 0
+                
+                if let firstTrack = activeAlbum.tracks.indices.contains(safeIndex) ? activeAlbum.tracks[safeIndex] : activeAlbum.tracks.first {
+                    activeCassetteSide = state.selectedCassetteSide
+                    activeCassetteTrackIndex = safeIndex
+                    
+                    mySpace.currentTrack = firstTrack
+                    mySpace.playbackState = .idle
+                    mySpace.playbackStartedAt = nil
+                    mySpace.positionAtAnchor = targetPosition
+                    mySpace.updatedAt = .now
+                    lastPublishedSnapshot = MusicPlayerSnapshot(
+                        track: firstTrack,
+                        position: targetPosition,
+                        playbackState: .idle
+                    )
+                }
+            }
+            if !drawerAlbums.isEmpty {
+                appleMusicShelfStatusText = "\(drawerAlbums.count)개 앨범을 내 서랍에서 불러왔어요"
+            }
+        } catch {
+            isRestoringPersistedDrawerState = false
+            UserDefaults.standard.removeObject(forKey: drawerPersistenceKey)
+            NSLog("[MonoSync] 서랍 복원 실패: \(String(describing: error))")
+        }
+    }
+
     private func updateMusicStatus(status: MusicAuthorization.Status) {
         switch status {
         case .authorized:
@@ -1112,4 +1462,170 @@ final class AppModel {
         return "재생 실패: 애플뮤직 확인 필요"
     }
 
+}
+
+// MARK: - 로그인 · 친구 세션 (Firebase)
+
+extension AppModel {
+    /// 앱 시작 시 한 번 호출. 로그인 상태를 관찰하며 친구/스페이스 구독을 자동으로 잇습니다.
+    @MainActor
+    func startFriendSession() {
+        guard !didStartFriendSession else { return }
+        didStartFriendSession = true
+        friendSessionTask = Task { [weak self] in
+            guard let self else { return }
+            for await user in self.authProvider.authStateChanges() {
+                self.handleAuthChange(user)
+            }
+        }
+    }
+
+    /// 내 초대 링크. 친구가 이 링크(monosync://add/<uid>)를 열면 나를 친구로 추가합니다.
+    var inviteURL: URL? {
+        guard isSignedIn else { return nil }
+        return FriendInvite.url(for: currentUser.id)
+    }
+
+    @MainActor
+    func signInWithApple() async {
+        do {
+            sessionStatusText = "로그인 중…"
+            try await authProvider.signInWithApple()
+            // 나머지(프로필 생성·친구 구독)는 authStateChanges 스트림이 처리합니다.
+        } catch AuthError.cancelled {
+            sessionStatusText = "로그인이 취소됐어요"
+        } catch {
+            sessionStatusText = (error as? LocalizedError)?.errorDescription ?? "로그인에 실패했어요"
+        }
+    }
+
+    @MainActor
+    func signOut() {
+        try? authProvider.signOut()
+    }
+
+    @MainActor
+    func updateNickname(_ name: String) async {
+        guard isSignedIn, !name.isEmpty else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        currentUser.displayName = trimmed
+        mySpace.owner.displayName = trimmed
+        await friendStore.ensureProfile(uid: currentUser.id, displayName: trimmed, handle: currentUser.handle)
+    }
+
+    @MainActor
+    func updateStationDescription(_ description: String) async {
+        mySpace.stationDescription = description
+        UserDefaults.standard.set(description, forKey: "MonoSync.myStationDescription")
+        
+        guard isSignedIn else { return }
+        // This will publish the updated space to Firestore
+        await spaceStore.publish(space: mySpace, event: .stopped(position: mySpace.positionAtAnchor, at: .now))
+    }
+
+    @MainActor
+    func updateStationTitle(_ title: String) async {
+        mySpace.title = title
+        UserDefaults.standard.set(title, forKey: "MonoSync.myStationTitle")
+        
+        guard isSignedIn else { return }
+        await spaceStore.publish(space: mySpace, event: .stopped(position: mySpace.positionAtAnchor, at: .now))
+    }
+
+    @MainActor
+    func addFriend(from url: URL) async {
+        guard let uid = FriendInvite.uid(from: url) else {
+            sessionStatusText = FriendError.invalidInvite.errorDescription ?? "잘못된 초대 링크예요"
+            return
+        }
+        await addFriend(uid: uid)
+    }
+
+    @MainActor
+    func addFriend(uid: String) async {
+        guard let myUID = authProvider.currentUID else {
+            sessionStatusText = "친구를 추가하려면 먼저 로그인하세요"
+            return
+        }
+        guard myUID != uid else {
+            sessionStatusText = "내 초대 링크예요"
+            return
+        }
+        do {
+            try await friendStore.addFriend(ownerUID: myUID, friendUID: uid)
+            sessionStatusText = "친구를 추가했어요"
+        } catch {
+            sessionStatusText = (error as? LocalizedError)?.errorDescription ?? "친구 추가에 실패했어요"
+        }
+    }
+
+    // MARK: - 내부
+
+    @MainActor
+    private func handleAuthChange(_ user: AuthedUser?) {
+        guard let user else {
+            // 한 번도 로그인한 적 없으면(앱 첫 실행·Firebase 미설정) 기존 목록을 건드리지 않습니다.
+            if isSignedIn {
+                friendIDsTask?.cancel()
+                spaceListenTask?.cancel()
+                friendSpacesByID = [:]
+                friendSpaces = []
+                sessionStatusText = "로그아웃됨"
+            }
+            isSignedIn = false
+            return
+        }
+
+        isSignedIn = true
+        let name = user.displayName ?? currentUser.displayName
+        let resolvedHandle: String
+        if currentUser.handle.isEmpty || currentUser.handle == MonoUser.sampleMe.handle {
+            resolvedHandle = "@" + user.uid.prefix(6)
+        } else {
+            resolvedHandle = currentUser.handle
+        }
+        currentUser = MonoUser(id: user.uid, displayName: name, handle: resolvedHandle, isFriend: false)
+        mySpace.owner = currentUser
+        sessionStatusText = "\(name) 으로 로그인됨"
+
+        Task { [weak self] in
+            guard let self else { return }
+            await self.friendStore.ensureProfile(uid: user.uid, displayName: name, handle: resolvedHandle)
+        }
+        bindFriends(ownerUID: user.uid)
+    }
+
+    @MainActor
+    private func bindFriends(ownerUID: String) {
+        friendIDsTask?.cancel()
+        friendIDsTask = Task { [weak self] in
+            guard let self else { return }
+            for await ids in self.friendStore.observeFriendIDs(ownerUID: ownerUID) {
+                self.subscribeSpaces(for: ids)
+            }
+        }
+    }
+
+    @MainActor
+    private func subscribeSpaces(for ids: [String]) {
+        spaceListenTask?.cancel()
+        friendSpacesByID = friendSpacesByID.filter { ids.contains($0.key) }
+        rebuildFriendSpaces()
+        guard !ids.isEmpty else { return }
+        spaceListenTask = Task { [weak self] in
+            guard let self else { return }
+            for await space in self.spaceStore.listenToSpaces(ownerIDs: ids) {
+                self.friendSpacesByID[space.owner.id] = space
+                self.rebuildFriendSpaces()
+            }
+        }
+    }
+
+    @MainActor
+    private func rebuildFriendSpaces() {
+        friendSpaces = friendSpacesByID.values.sorted { lhs, rhs in
+            if lhs.isLive != rhs.isLive { return lhs.isLive }
+            return lhs.updatedAt > rhs.updatedAt
+        }
+    }
 }

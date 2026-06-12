@@ -5,6 +5,7 @@ struct HomeView: View {
     @State private var isShowingTrackSearch = false
     @State private var activeShelf: AppleMusicShelfKind?
     @State private var isShowingSpaceTools = false
+    @State private var isShowingTapeCustomizer = false
     @State private var isShowingAppleMusicConnectPrompt = false
     @State private var pendingAppleMusicAction: AppleMusicRequiredAction?
     let onMenu: () -> Void
@@ -14,40 +15,49 @@ struct HomeView: View {
             GeometryReader { proxy in
                 let availableWidth = max(proxy.size.width, 1)
                 let availableHeight = max(proxy.size.height, 1)
+                let isLandscape = availableWidth > availableHeight
                 let compact = availableWidth < 380 || availableHeight < 760
                 let topInset: CGFloat = 2
-                let cassetteSize = availableWidth
-                let cassetteHeight = cassetteSize * (787.0 / 930.0)
-                let headerHeight: CGFloat = compact ? 40 : 46
-                let headerToCassette: CGFloat = compact ? 12 : 16
-                let cassetteToArtwork: CGFloat = compact ? 6 : 8
-                let availableForDisc = availableHeight
+                
+                // 가로 모드일 경우 버튼을 제거하므로 테이프 본체(637) 높이만을 기준으로 합니다.
+                let cassetteHeightRatio = isLandscape ? (637.0 / 930.0) : (877.0 / 930.0)
+                let cassetteSize = isLandscape ? (availableHeight * 0.95) / cassetteHeightRatio : availableWidth * 0.95
+                let cassetteHeight = cassetteSize * cassetteHeightRatio
+                let headerHeight: CGFloat = isLandscape ? 0 : (compact ? 40 : 46)
+                let headerToCassette: CGFloat = isLandscape ? 0 : (compact ? 12 : 16)
+                let cassetteToArtwork: CGFloat = isLandscape ? 0 : (compact ? 6 : 8)
+                let cassetteLift: CGFloat = isLandscape ? 0 : (compact ? -25 : -12)
+                
+                let topRegionHeight = isLandscape ? 0 : max(140, (availableHeight
                     - topInset
                     - headerHeight
                     - headerToCassette
                     - cassetteHeight
                     - cassetteToArtwork
-                let discSize = min(
-                    availableWidth - 32,
-                    max(availableForDisc, compact ? 148 : 172)
-                )
+                    - cassetteLift) * 0.9)
 
-                VStack(alignment: .leading, spacing: headerToCassette) {
-                    HeaderView(
-                        onSearch: {
-                            runOrPromptForAppleMusic(.search)
-                        },
-                        onPlaylists: {
-                            runOrPromptForAppleMusic(.playlists)
-                        },
-                        onDrawer: {
-                            activeShelf = .drawer
-                        },
-                        onMenu: onMenu
-                    )
-                    .frame(height: headerHeight, alignment: .top)
-                    .padding(.top, topInset)
-                    .padding(.horizontal, 16)
+                ZStack(alignment: .bottom) {
+                    VStack(alignment: .center, spacing: headerToCassette) {
+                        if !isLandscape {
+                        HeaderView(
+                            onSearch: {
+                                runOrPromptForAppleMusic(.search)
+                            },
+                            onCustom: {
+                                isShowingTapeCustomizer = true
+                            },
+                            onMenu: onMenu
+                        )
+                        .frame(height: headerHeight, alignment: .top)
+                        .padding(.top, topInset)
+                        .padding(.horizontal, 16)
+                        .contentShape(Rectangle())
+                        .onSwipeToChangeSection(current: .space) { next in
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                                appModel.selectedSection = next
+                            }
+                        }
+                    }
 
                     NowPlayingPanel(
                         space: appModel.mySpace,
@@ -59,18 +69,42 @@ struct HomeView: View {
                             }
                             return friendTrack.matches(myTrack)
                         },
-                        album: appModel.album(for: appModel.activeCassetteSide ?? appModel.selectedCassetteSide),
-                        cassetteSide: appModel.activeCassetteSide ?? appModel.selectedCassetteSide,
-                        discSize: max(discSize, compact ? 148 : 172),
+                        album: appModel.album(for: appModel.selectedCassetteSide),
+                        cassetteSide: appModel.selectedCassetteSide,
+                        isActiveSide: appModel.selectedCassetteSide == appModel.activeCassetteSide,
+                        topRegionHeight: topRegionHeight,
                         cassetteSize: cassetteSize,
                         compact: compact,
+                        isLandscape: isLandscape,
                         cassetteToArtwork: cassetteToArtwork,
                         statusText: appModel.musicStatusText,
                         isPlaying: appModel.isMusicPlaybackActive,
                         isAppleMusicConnected: appModel.isAppleMusicConnected,
                         pressedButtons: appModel.pressedCassetteButtons,
+                        showsAlbumArt: appModel.showsAlbumArt,
+                        drawerAlbums: appModel.drawerAlbums,
                         onConnectAppleMusic: {
                             Task { await appModel.connectAppleMusic() }
+                        },
+                        onAddAlbum: {
+                            runOrPromptForAppleMusic(.search)
+                        },
+                        onDeleteAlbum: { album in
+                            appModel.deleteDrawerAlbum(album)
+                        },
+                        onShowDrawer: {
+                            appModel.prefersDrawerGrid = true
+                        },
+                        onInsertDroppedAlbum: { id in
+                            Task { await appModel.insertDrawerAlbum(id: id, into: appModel.selectedCassetteSide) }
+                        },
+                        onCassetteSwipeUp: {
+                            if appModel.selectedCassetteAlbum != nil {
+                                withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) {
+                                    appModel.prefersDrawerGrid = true
+                                    appModel.drawerFocusTrigger += 1
+                                }
+                            }
                         },
                         onBack: {
                             Task { await appModel.pressPreviousButton() }
@@ -86,26 +120,62 @@ struct HomeView: View {
                         },
                         onStop: {
                             if appModel.isCassetteTransportZero {
-                                activeShelf = .drawer
+                                runOrPromptForAppleMusic(.search)
                             } else {
                                 Task { await appModel.pressStopButton() }
                             }
                         },
                         onOpenTools: {
-                            appModel.flipCassetteSide()
+                            Task { await appModel.flipCassetteSide() }
                         }
                     )
                 }
-                .frame(width: availableWidth, height: availableHeight, alignment: .top)
+                .frame(width: availableWidth, height: availableHeight, alignment: .center)
                 .clipped()
-            }
-            .background(MonoTheme.ink.ignoresSafeArea())
-            .toolbarBackground(MonoTheme.ink, for: .navigationBar)
-            .alert("Apple Music 연결 필요", isPresented: $isShowingAppleMusicConnectPrompt) {
-                Button("취소", role: .cancel) {
+                
+                // 딤 레이어 (조건문 제거하여 뒷배경 흔들림 방지)
+                Color.black
+                    .opacity(isShowingTrackSearch ? 0.4 : 0)
+                    .ignoresSafeArea()
+                    .animation(.easeInOut(duration: 0.25), value: isShowingTrackSearch)
+                    .allowsHitTesting(isShowingTrackSearch)
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                            isShowingTrackSearch = false
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            appModel.drawerSnapTrigger += 1
+                        }
+                    }
+                
+                // 찾기 화면 (조건문 제거 및 오프셋 애니메이션으로 아래에서 부드럽게 전체화면으로 덮음)
+                TrackSearchView(
+                    isShowing: isShowingTrackSearch,
+                    onClose: {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                            isShowingTrackSearch = false
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            appModel.drawerSnapTrigger += 1
+                        }
+                    },
+                    onDone: {
+                        appModel.prefersDrawerGrid = true
+                    }
+                )
+                .offset(y: isShowingTrackSearch ? 0 : availableHeight + 100)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isShowingTrackSearch)
+                .zIndex(10)
+            } // ZStack 닫음
+            } // GeometryReader 닫음
+            .background(Color.black.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
+            .toolbarBackground(Color.black, for: .navigationBar)
+            .alert("Apple Music 연결 필요".localized(to: appModel.selectedLanguage), isPresented: $isShowingAppleMusicConnectPrompt) {
+                Button("취소".localized(to: appModel.selectedLanguage), role: .cancel) {
                     pendingAppleMusicAction = nil
                 }
-                Button("연결") {
+                Button("연결".localized(to: appModel.selectedLanguage)) {
                     Task {
                         await appModel.connectAppleMusic()
                         if appModel.isAppleMusicConnected, let action = pendingAppleMusicAction {
@@ -115,16 +185,11 @@ struct HomeView: View {
                     }
                 }
             } message: {
-                Text("앨범 검색과 플레이리스트 가져오기를 사용하려면 Apple Music 연결이 필요해요.")
-            }
-            .navigationDestination(isPresented: $isShowingTrackSearch) {
-                TrackSearchView {
-                    activeShelf = .drawer
-                }
+                Text("앨범 검색을 사용하려면 Apple Music 연결이 필요해요.".localized(to: appModel.selectedLanguage))
             }
             .sheet(item: $activeShelf) { shelf in
                 AppleMusicShelfView(kind: shelf)
-                    .presentationDetents((shelf == .drawer || shelf == .playlists) ? [.large] : [.medium, .large])
+                    .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $isShowingSpaceTools) {
@@ -135,6 +200,9 @@ struct HomeView: View {
                         Task { await appModel.loadRecentlyPlayedTracks() }
                     }
                 )
+            }
+            .sheet(isPresented: $isShowingTapeCustomizer) {
+                TapeCustomizerView()
             }
         }
     }
@@ -153,29 +221,21 @@ struct HomeView: View {
         switch action {
         case .search:
             isShowingTrackSearch = true
-        case .playlists:
-            activeShelf = .playlists
-            Task { await appModel.loadLibraryPlaylists() }
         }
     }
 }
 
 private enum AppleMusicRequiredAction {
     case search
-    case playlists
 }
 
 private enum AppleMusicShelfKind: String, Identifiable {
-    case drawer
-    case playlists
     case history
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .drawer: "내 서랍"
-        case .playlists: "플레이리스트"
         case .history: "최근 기록"
         }
     }
@@ -247,7 +307,7 @@ private struct AppleMusicShelfView: View {
         NavigationStack {
             VStack(spacing: 12) {
                 HStack {
-                    Text(appModel.appleMusicShelfStatusText)
+                    Text(appModel.appleMusicShelfStatusText.localized(to: appModel.selectedLanguage))
                         .font(MonoTheme.small)
                         .foregroundStyle(MonoTheme.mist)
                     Spacer()
@@ -258,17 +318,9 @@ private struct AppleMusicShelfView: View {
                 }
 
                 switch kind {
-                case .drawer:
-                    AlbumDrawerView()
-                case .playlists, .history:
+                case .history:
                     ScrollView {
                         LazyVStack(spacing: 8) {
-                            switch kind {
-                            case .drawer:
-                                EmptyView()
-                            case .playlists:
-                            AppleMusicDrawerPlaylistImportSection()
-                            case .history:
                             ForEach(appModel.recentlyPlayedTracks) { track in
                                 TrackHistoryRow(
                                     track: track,
@@ -281,14 +333,13 @@ private struct AppleMusicShelfView: View {
                                     }
                                 )
                             }
-                            }
                         }
                     }
                 }
             }
             .padding(18)
             .background(MonoTheme.ink.ignoresSafeArea())
-            .navigationTitle(kind.title)
+            .navigationTitle(kind.title.localized(to: appModel.selectedLanguage))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -304,519 +355,6 @@ private struct AppleMusicShelfView: View {
                 }
             }
         }
-    }
-}
-
-private struct AlbumDrawerView: View {
-    @Environment(AppModel.self) private var appModel
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            DrawerSideDock()
-
-            HStack {
-                Text("내 서랍")
-                    .font(MonoTheme.point)
-                    .foregroundStyle(MonoTheme.paper)
-                Spacer()
-            }
-
-            ScrollView {
-                if appModel.drawerAlbums.isEmpty {
-                    Text("검색에서 앨범을 찾아 내 서랍에 넣어보세요.")
-                        .font(MonoTheme.small)
-                        .foregroundStyle(MonoTheme.mist)
-                        .padding(14)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white.opacity(0.045))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                } else {
-                    LazyVGrid(
-                        columns: [
-                            GridItem(.flexible(), spacing: 12),
-                            GridItem(.flexible(), spacing: 12)
-                        ],
-                        spacing: 14
-                    ) {
-                        ForEach(appModel.drawerAlbums) { album in
-                            DrawerAlbumTile(
-                                album: album,
-                                onInsertA: {
-                                    Task { await appModel.insertAlbum(album, into: .a) }
-                                },
-                                onInsertB: {
-                                    Task { await appModel.insertAlbum(album, into: .b) }
-                                },
-                                onDelete: {
-                                    appModel.deleteDrawerAlbum(album)
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct DrawerSideDock: View {
-    @Environment(AppModel.self) private var appModel
-
-    var body: some View {
-        HStack(spacing: 8) {
-            CassetteSideSlot(side: .a, album: appModel.cassetteSideA, isSelected: appModel.selectedCassetteSide == .a) {
-                if let album = appModel.cassetteSideA {
-                    Task { await appModel.insertAlbum(album, into: .a) }
-                } else {
-                    appModel.selectedCassetteSide = .a
-                }
-            } onDropAlbum: { id in
-                Task {
-                    await appModel.insertDrawerAlbum(id: id, into: .a)
-                }
-            }
-            CassetteSideSlot(side: .b, album: appModel.cassetteSideB, isSelected: appModel.selectedCassetteSide == .b) {
-                if let album = appModel.cassetteSideB {
-                    Task { await appModel.insertAlbum(album, into: .b) }
-                } else {
-                    appModel.selectedCassetteSide = .b
-                }
-            } onDropAlbum: { id in
-                Task {
-                    await appModel.insertDrawerAlbum(id: id, into: .b)
-                }
-            }
-        }
-        .padding(.bottom, 2)
-        .background(MonoTheme.ink)
-    }
-}
-
-private struct CassetteSideSlot: View {
-    let side: CassetteSide
-    let album: AlbumSnapshot?
-    let isSelected: Bool
-    let action: () -> Void
-    let onDropAlbum: (AlbumSnapshot.ID) -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text(side.title)
-                        .font(MonoTheme.bodyMedium)
-                        .foregroundStyle(MonoTheme.paper)
-                    Spacer()
-                    if album != nil {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(MonoTheme.paper)
-                    }
-                }
-
-                if let album {
-                    HStack(spacing: 8) {
-                        AlbumArtworkView(url: album.artworkURL)
-                            .frame(width: 34, height: 34)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(album.title)
-                                .font(MonoTheme.small)
-                                .foregroundStyle(MonoTheme.paper)
-                                .lineLimit(1)
-                            Text(album.artistName)
-                                .font(Font.custom("Paperlogy-4Regular", size: 10))
-                                .foregroundStyle(MonoTheme.mist)
-                                .lineLimit(1)
-                            Text(album.albumFactText)
-                                .font(Font.custom("Paperlogy-4Regular", size: 9))
-                                .foregroundStyle(MonoTheme.mist.opacity(0.78))
-                                .lineLimit(1)
-                        }
-                    }
-                } else {
-                    Text("앨범을 끌어 넣기")
-                        .font(MonoTheme.small)
-                        .foregroundStyle(MonoTheme.mist)
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(minHeight: 78, alignment: .topLeading)
-            .padding(12)
-            .background(isSelected ? MonoTheme.accent.opacity(0.42) : Color.white.opacity(0.035))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(
-                        style: StrokeStyle(lineWidth: album == nil ? 1.4 : 1, dash: album == nil ? [5, 5] : [])
-                    )
-                    .foregroundStyle(album == nil ? MonoTheme.mist.opacity(0.65) : MonoTheme.paper.opacity(0.18))
-            }
-        }
-        .buttonStyle(.plain)
-        .dropDestination(for: String.self) { items, _ in
-            guard let id = items.first else { return false }
-            onDropAlbum(id)
-            return true
-        }
-    }
-}
-
-private struct DrawerAlbumTile: View {
-    let album: AlbumSnapshot
-    let onInsertA: () -> Void
-    let onInsertB: () -> Void
-    let onDelete: () -> Void
-    @State private var isShowingAlbumActions = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            AlbumArtworkView(url: album.artworkURL)
-                .aspectRatio(1, contentMode: .fit)
-                .overlay(alignment: .bottomTrailing) {
-                    Button {
-                        isShowingAlbumActions = true
-                    } label: {
-                        Image(systemName: "rectangle.stack.badge.plus")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(MonoTheme.paper)
-                            .frame(width: 26, height: 26)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(6)
-                    .accessibilityLabel("앨범 삽입 메뉴")
-                }
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(album.title)
-                    .font(MonoTheme.bodyMedium)
-                    .foregroundStyle(MonoTheme.paper)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.78)
-                Text(album.artistName)
-                    .font(MonoTheme.small)
-                    .foregroundStyle(MonoTheme.mist)
-                    .lineLimit(1)
-                Text(album.albumFactText)
-                    .font(Font.custom("Paperlogy-4Regular", size: 10))
-                    .foregroundStyle(MonoTheme.mist.opacity(0.82))
-                    .lineLimit(1)
-            }
-        }
-        .padding(10)
-        .background(Color.white.opacity(0.045))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .draggable(album.id)
-        .confirmationDialog(album.title, isPresented: $isShowingAlbumActions, titleVisibility: .visible) {
-            Button("A면 삽입", action: onInsertA)
-            Button("B면 삽입", action: onInsertB)
-            Button("앨범 삭제", role: .destructive, action: onDelete)
-            Button("취소", role: .cancel) {}
-        }
-    }
-}
-
-private struct MonoPlaylistEditor: View {
-    @Environment(AppModel.self) private var appModel
-    let onPlayPlaylist: () -> Void
-    let onPlayTrack: (TrackSnapshot) -> Void
-    @State private var renameDraft = ""
-    @State private var isShowingRenameAlert = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("모노싱크 플레이리스트")
-                    .font(MonoTheme.point)
-                    .foregroundStyle(MonoTheme.paper)
-                Spacer()
-                Button(action: onPlayPlaylist) {
-                    Image(systemName: "play.fill")
-                        .font(MonoTheme.bodyMedium)
-                        .foregroundStyle(MonoTheme.paper)
-                        .frame(width: 38, height: 38)
-                        .background(appModel.isSelectedMonoPlaylistPlaying ? MonoTheme.accent : Color.white.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-                .disabled(appModel.selectedMonoPlaylist?.tracks.isEmpty ?? true)
-                .opacity((appModel.selectedMonoPlaylist?.tracks.isEmpty ?? true) ? 0.38 : 1)
-                .accessibilityLabel("선택한 모노플리 재생")
-
-                Button {
-                    appModel.createMonoPlaylist()
-                } label: {
-                    Image(systemName: "plus")
-                        .font(MonoTheme.bodyMedium)
-                        .foregroundStyle(MonoTheme.paper)
-                        .frame(width: 38, height: 38)
-                        .background(MonoTheme.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-                .accessibilityLabel("모노플리 만들기")
-            }
-
-            if !appModel.monoPlaylists.isEmpty {
-                HStack(spacing: 8) {
-                    Picker("모노플리", selection: Binding(
-                        get: { appModel.selectedMonoPlaylistID ?? appModel.monoPlaylists.first?.id },
-                        set: { id in
-                            appModel.selectedMonoPlaylistID = id
-                        }
-                    )) {
-                        ForEach(appModel.monoPlaylists) { playlist in
-                            Text(playlist.title).tag(Optional(playlist.id))
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .tint(MonoTheme.paper)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.035))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                    Button {
-                        renameDraft = appModel.selectedMonoPlaylist?.title ?? ""
-                        isShowingRenameAlert = true
-                    } label: {
-                        Image(systemName: "pencil")
-                            .foregroundStyle(MonoTheme.paper)
-                            .frame(width: 42, height: 42)
-                            .background(Color.white.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    .accessibilityLabel("모노플리 수정")
-                }
-                .alert("모노플리 수정", isPresented: $isShowingRenameAlert) {
-                    TextField("이름", text: $renameDraft)
-
-                    Button("취소", role: .cancel) {}
-                    Button("저장") {
-                        if let id = appModel.selectedMonoPlaylist?.id {
-                            appModel.renameMonoPlaylist(id: id, title: renameDraft)
-                        }
-                    }
-                } message: {
-                    Text("선택한 모노플리의 이름을 바꿀 수 있어요.")
-                }
-
-                if let playlist = appModel.selectedMonoPlaylist {
-                    if playlist.tracks.isEmpty {
-                        Text("아직 곡이 없어요. Apple Music 플레이리스트나 최근 기록에서 곡을 담아보세요.")
-                            .font(MonoTheme.small)
-                            .foregroundStyle(MonoTheme.mist)
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.white.opacity(0.035))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    } else {
-                        ForEach(playlist.tracks) { track in
-                            MonoPlaylistTrackRow(
-                                track: track,
-                                onPlay: {
-                                    onPlayTrack(track)
-                                },
-                                onDelete: {
-                                    appModel.deleteTrackFromSelectedMonoPlaylist(track)
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        .padding(14)
-        .background(Color.white.opacity(0.045))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .task {
-            if appModel.libraryPlaylists.isEmpty {
-                await appModel.loadLibraryPlaylists()
-            }
-        }
-    }
-}
-
-private struct AppleMusicImportSection: View {
-    @Environment(AppModel.self) private var appModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("애플뮤직 플레이리스트 가져오기")
-                    .font(MonoTheme.pointSmall)
-                    .foregroundStyle(MonoTheme.mist)
-                Spacer()
-                Button {
-                    Task { await appModel.loadLibraryPlaylists() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .foregroundStyle(MonoTheme.paper)
-                        .frame(width: 34, height: 34)
-                        .background(Color.white.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-                .accessibilityLabel("애플뮤직 플레이리스트 새로고침")
-            }
-
-            if appModel.libraryPlaylists.isEmpty {
-                Text("가져올 Apple Music 플레이리스트가 아직 없어요.")
-                    .font(MonoTheme.small)
-                    .foregroundStyle(MonoTheme.mist)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white.opacity(0.035))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            } else {
-                ForEach(appModel.libraryPlaylists) { playlist in
-                    MusicCollectionImportRow(item: playlist) {
-                        Task { await appModel.importAppleMusicPlaylistToSelectedMonoPlaylist(playlist) }
-                    }
-                }
-            }
-        }
-        .padding(14)
-        .background(Color.white.opacity(0.045))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .task {
-            if appModel.libraryPlaylists.isEmpty, !appModel.isLoadingAppleMusicShelf {
-                await appModel.loadLibraryPlaylists()
-            }
-        }
-    }
-}
-
-private struct AppleMusicDrawerPlaylistImportSection: View {
-    @Environment(AppModel.self) private var appModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Apple Music 플레이리스트")
-                    .font(MonoTheme.pointSmall)
-                    .foregroundStyle(MonoTheme.mist)
-                Spacer()
-                Button {
-                    Task { await appModel.loadLibraryPlaylists() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .foregroundStyle(MonoTheme.paper)
-                        .frame(width: 34, height: 34)
-                        .background(Color.white.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-                .accessibilityLabel("새로고침")
-            }
-
-            if appModel.libraryPlaylists.isEmpty {
-                Text("가져올 Apple Music 플레이리스트가 아직 없어요.")
-                    .font(MonoTheme.small)
-                    .foregroundStyle(MonoTheme.mist)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white.opacity(0.035))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            } else {
-                ForEach(appModel.libraryPlaylists) { playlist in
-                    MusicCollectionImportRow(
-                        item: playlist,
-                        isImported: appModel.drawerAlbums.contains(where: { $0.id == "monosync-playlist-album:\(playlist.id)" })
-                    ) {
-                        Task { await appModel.importAppleMusicPlaylistToDrawer(playlist) }
-                    }
-                }
-            }
-        }
-        .padding(14)
-        .background(Color.white.opacity(0.045))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-private struct MusicCollectionImportRow: View {
-    let item: MusicCollectionSnapshot
-    var isImported = false
-    let onImport: () -> Void
-
-    var body: some View {
-        HStack(spacing: 12) {
-            AlbumArtworkView(url: item.artworkURL)
-                .frame(width: 52, height: 52)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.title)
-                    .font(MonoTheme.bodyMedium)
-                    .foregroundStyle(MonoTheme.paper)
-                    .lineLimit(1)
-                Text("이 안의 곡을 선택한 모노플리에 담기")
-                    .font(MonoTheme.small)
-                    .foregroundStyle(MonoTheme.mist)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            Button(action: onImport) {
-                Image(systemName: isImported ? "archivebox.fill" : "square.and.arrow.down")
-                    .foregroundStyle(isImported ? MonoTheme.paper : MonoTheme.mist)
-                    .frame(width: 36, height: 36)
-                    .background(isImported ? MonoTheme.accent : Color.white.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            .disabled(isImported)
-            .accessibilityLabel("모노플리에 가져오기")
-        }
-        .padding(12)
-        .background(Color.white.opacity(0.035))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-private struct MonoPlaylistTrackRow: View {
-    let track: TrackSnapshot
-    let onPlay: () -> Void
-    let onDelete: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            AlbumArtworkView(url: track.artworkURL)
-                .frame(width: 42, height: 42)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(track.title)
-                    .font(MonoTheme.bodyMedium)
-                    .foregroundStyle(MonoTheme.paper)
-                    .lineLimit(1)
-                Text(track.artistName)
-                    .font(MonoTheme.small)
-                    .foregroundStyle(MonoTheme.mist)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            Button(action: onPlay) {
-                Image(systemName: "play.fill")
-                    .foregroundStyle(MonoTheme.paper)
-                    .frame(width: 32, height: 32)
-                    .background(Color.white.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            .accessibilityLabel("이 곡부터 재생")
-
-            Button(action: onDelete) {
-                Image(systemName: "minus")
-                    .foregroundStyle(MonoTheme.paper)
-                    .frame(width: 32, height: 32)
-                    .background(Color.white.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            .accessibilityLabel("모노플리에서 삭제")
-        }
-        .padding(10)
-        .background(Color.white.opacity(0.035))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -871,14 +409,13 @@ private struct TrackHistoryRow: View {
 
 private struct HeaderView: View {
     let onSearch: () -> Void
-    let onPlaylists: () -> Void
-    let onDrawer: () -> Void
+    let onCustom: () -> Void
     let onMenu: () -> Void
 
     var body: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 1) {
-                Text("momosync.")
+                Text("monosync.")
                     .font(Font.custom("Paperlogy-7Bold", size: 25))
                     .foregroundStyle(MonoTheme.paper)
                     .lineLimit(1)
@@ -889,17 +426,116 @@ private struct HeaderView: View {
 
             Spacer()
 
-            HStack(spacing: 5) {
+            HStack(spacing: 10) {
                 HeaderCircleButton(systemName: "magnifyingglass", action: onSearch)
-                .accessibilityLabel("검색")
-                HeaderCircleButton(systemName: "music.note.list", action: onPlaylists)
-                    .accessibilityLabel("플레이리스트")
-                HeaderCircleButton(systemName: "archivebox", action: onDrawer)
-                    .accessibilityLabel("내 서랍")
+                    .accessibilityLabel("검색")
+                HeaderCircleButton(systemName: "paintpalette", action: onCustom)
+                    .accessibilityLabel("테이프 커스텀")
                 MenuCircleButton(isActive: true, action: onMenu)
             }
             .padding(.top, 6)
         }
+        .frame(height: 46, alignment: .top)
+    }
+}
+
+private struct TapeCustomizerView: View {
+    @Environment(AppModel.self) private var appModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+                    Text("원하는 카세트 테이프 스타일을 선택해 주세요.")
+                        .font(Font.custom("NotoSansKR-Regular", size: 14))
+                        .foregroundStyle(MonoTheme.mist)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 4)
+
+                    ForEach(CassetteTapeStyle.allCases) { style in
+                        Button {
+                            appModel.selectedTapeStyle = style
+                        } label: {
+                            HStack(spacing: 16) {
+                                TapeStyleThumbnail(style: style)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(style.name)
+                                        .font(Font.custom("NotoSansKR-Bold", size: 15))
+                                        .foregroundStyle(MonoTheme.paper)
+                                    Text(style.description)
+                                        .font(Font.custom("NotoSansKR-Regular", size: 12))
+                                        .foregroundStyle(MonoTheme.mist)
+                                }
+
+                                Spacer()
+
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(MonoTheme.accent)
+                                    .font(.system(size: 20))
+                                    .frame(width: 24, height: 24)
+                                    .opacity(appModel.selectedTapeStyle == style ? 1 : 0)
+                            }
+                            .padding(14)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(appModel.selectedTapeStyle == style ? Color.white.opacity(0.08) : Color.white.opacity(0.03))
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(appModel.selectedTapeStyle == style ? MonoTheme.accent.opacity(0.5) : Color.clear, lineWidth: 1)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .transaction { transaction in
+                            transaction.animation = nil
+                        }
+                    }
+                }
+                .padding(18)
+            }
+            .background(MonoTheme.ink.ignoresSafeArea())
+            .navigationTitle("테이프 커스텀")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .foregroundStyle(MonoTheme.paper)
+                    }
+                    .accessibilityLabel("닫기")
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+}
+
+private struct TapeStyleThumbnail: View {
+    let style: CassetteTapeStyle
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.2)
+
+            if let uiImage = UIImage(named: style.rawValue) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 76, height: 51)
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(width: 80, height: 55)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.white.opacity(0.18), lineWidth: 1)
+        }
+        .drawingGroup()
     }
 }
 

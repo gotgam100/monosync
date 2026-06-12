@@ -12,10 +12,12 @@ struct MonoPageHeader: View {
                     .font(Font.custom("Paperlogy-7Bold", size: 25))
                     .foregroundStyle(MonoTheme.paper)
                     .lineLimit(1)
-                Text(subtitle)
-                    .font(Font.custom("Paperlogy-4Regular", size: 11))
-                    .foregroundStyle(MonoTheme.mist)
-                    .lineLimit(1)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(Font.custom("Paperlogy-4Regular", size: 11))
+                        .foregroundStyle(MonoTheme.mist)
+                        .lineLimit(1)
+                }
             }
 
             Spacer()

@@ -28,6 +28,7 @@ struct ListeningSpace: Identifiable, Hashable, Sendable {
     let id: String
     var owner: MonoUser
     var title: String
+    var stationDescription: String
     var visibility: SpaceVisibility
     var currentTrack: TrackSnapshot?
     var playbackState: PlaybackState
@@ -77,6 +78,7 @@ struct ListeningSpace: Identifiable, Hashable, Sendable {
         id: "space-me",
         owner: .sampleMe,
         title: "monosync space",
+        stationDescription: "환영합니다! 제가 좋아하는 음악들을 주로 듣는 공간이에요.",
         visibility: .friends,
         currentTrack: nil,
         playbackState: .idle,
@@ -87,8 +89,8 @@ struct ListeningSpace: Identifiable, Hashable, Sendable {
     )
 
     static let sampleFriends: [ListeningSpace] = [
-        ListeningSpace(id: "space-rin", owner: MonoUser(id: "rin", displayName: "Rin", handle: "@rin.fm", isFriend: true), title: "late night desk", visibility: .friends, currentTrack: TrackSnapshot.samples[1], playbackState: .playing, playbackStartedAt: Date().addingTimeInterval(-36), positionAtAnchor: 0, updatedAt: .now, listenerCount: 2),
-        ListeningSpace(id: "space-mono", owner: MonoUser(id: "mono", displayName: "Mono", handle: "@mono.radio", isFriend: false), title: "public tiny radio", visibility: .publicSpace, currentTrack: TrackSnapshot.samples[2], playbackState: .playing, playbackStartedAt: Date().addingTimeInterval(-148), positionAtAnchor: 0, updatedAt: .now, listenerCount: 28),
-        ListeningSpace(id: "space-june", owner: MonoUser(id: "june", displayName: "June", handle: "@june", isFriend: true), title: "quiet room", visibility: .friends, currentTrack: nil, playbackState: .idle, playbackStartedAt: nil, positionAtAnchor: 0, updatedAt: .now, listenerCount: 0)
+        ListeningSpace(id: "space-rin", owner: MonoUser(id: "rin", displayName: "Rin", handle: "@rin.fm", isFriend: true), title: "late night desk", stationDescription: "새벽 감성 위주로 듣습니다.", visibility: .friends, currentTrack: TrackSnapshot.samples[1], playbackState: .playing, playbackStartedAt: Date().addingTimeInterval(-36), positionAtAnchor: 0, updatedAt: .now, listenerCount: 2),
+        ListeningSpace(id: "space-mono", owner: MonoUser(id: "mono", displayName: "Mono", handle: "@mono.radio", isFriend: false), title: "public tiny radio", stationDescription: "누구나 환영", visibility: .publicSpace, currentTrack: TrackSnapshot.samples[2], playbackState: .playing, playbackStartedAt: Date().addingTimeInterval(-148), positionAtAnchor: 0, updatedAt: .now, listenerCount: 28),
+        ListeningSpace(id: "space-june", owner: MonoUser(id: "june", displayName: "June", handle: "@june", isFriend: true), title: "quiet room", stationDescription: "작업용 음악", visibility: .friends, currentTrack: nil, playbackState: .idle, playbackStartedAt: nil, positionAtAnchor: 0, updatedAt: .now, listenerCount: 0)
     ]
 }

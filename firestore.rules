@@ -1,0 +1,41 @@
+rules_version = '2';
+
+// MonoSync Firestore 보안 규칙
+// Firebase 콘솔 > Firestore Database > 규칙 탭에 붙여넣고 게시하세요.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // 내가 누군가를 친구로 추가했는지(= 그 사람 공개 범위가 friends일 때 읽기 허용)
+    function isMyFriend(ownerId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(ownerId));
+    }
+
+    // 사용자 프로필: 본인만 쓰기. 로그인한 사용자는 읽기 가능(친구 추가 시 이름 표시).
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow write: if signedIn() && request.auth.uid == uid;
+
+      // 친구 목록: 본인만 읽고 쓸 수 있음.
+      match /friends/{friendId} {
+        allow read, write: if signedIn() && request.auth.uid == uid;
+      }
+    }
+
+    // 재생 스페이스: 본인만 쓰기.
+    // 읽기는 공개 범위에 따라: public이면 누구나, friends면 친구만, 본인은 항상.
+    match /spaces/{ownerId} {
+      allow write: if signedIn() && request.auth.uid == ownerId;
+      allow read: if signedIn() && (
+        request.auth.uid == ownerId
+        || resource.data.visibility == 'publicSpace'
+        || resource.data.visibility == 'link'
+        || (resource.data.visibility == 'friends' && isMyFriend(ownerId))
+      );
+    }
+  }
+}

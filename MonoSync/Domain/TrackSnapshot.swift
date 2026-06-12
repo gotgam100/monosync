@@ -1,6 +1,6 @@
 import Foundation
 
-struct TrackSnapshot: Identifiable, Hashable, Sendable {
+struct TrackSnapshot: Identifiable, Hashable, Codable, Sendable {
     let id: String
     var title: String
     var artistName: String

@@ -22,6 +22,19 @@
 	<true/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.music</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.baekmac.MonoSync</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>monosync</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>MonoSync는 Apple Music으로 음악을 재생하고, 사용자가 허용한 사람에게 앱 안의 청취 상태를 공유하기 위해 사용합니다.</string>
 	<key>UIAppFonts</key>
@@ -31,6 +44,10 @@
 		<string>Paperlogy-6SemiBold.ttf</string>
 		<string>Paperlogy-7Bold.ttf</string>
 		<string>Cafe24PROSlimAir.ttf</string>
+		<string>NotoSansKR-Regular.otf</string>
+		<string>NotoSansKR-Medium.otf</string>
+		<string>UwU.ttf</string>
+		<string>나눔손글씨 강부장님체.ttf</string>
 	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
@@ -44,6 +61,8 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 </dict>
 </plist>

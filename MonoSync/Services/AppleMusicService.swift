@@ -1,5 +1,7 @@
 import Foundation
+import MediaPlayer
 import MusicKit
+import UIKit
 
 enum AppleMusicPlaybackError: LocalizedError {
     case realDeviceRequired
@@ -59,6 +61,7 @@ protocol AppleMusicServicing {
     func requestAuthorization() async -> MusicAuthorization.Status
     func searchSongs(term: String) async throws -> [TrackSnapshot]
     func searchAlbums(term: String) async throws -> [AlbumSnapshot]
+    func fetchArtist(name: String) async throws -> ArtistSnapshot
     func tracks(in album: AlbumSnapshot) async throws -> [TrackSnapshot]
     func libraryPlaylists() async throws -> [MusicCollectionSnapshot]
     func tracks(in playlist: MusicCollectionSnapshot) async throws -> [TrackSnapshot]
@@ -174,6 +177,29 @@ final class AppleMusicService: AppleMusicServicing {
         }
         await primePlaybackSessionIfNeeded()
 
+        if album.id.hasPrefix("monosync-playlist-album:") {
+            let sourceID = album.id.replacingOccurrences(of: "monosync-playlist-album:", with: "")
+            if sourceID.hasPrefix("mediaplayer-playlist:") {
+                let playlistTracks = try await AppleMusicMediaLibraryLoader.tracks(sourceID: sourceID)
+                guard !playlistTracks.isEmpty else {
+                    throw AppleMusicPlaybackError.songNotFound
+                }
+
+                NSLog("[MonoSync] play(album:) MediaPlayer 플레이리스트 \(playlistTracks.count)곡 재생")
+                try await play(tracks: playlistTracks, startIndex: startIndex, startTime: startTime)
+                return playlistTracks
+            }
+
+            let songs = try await songsForLibraryPlaylist(sourceID: sourceID)
+            guard !songs.isEmpty else {
+                throw AppleMusicPlaybackError.songNotFound
+            }
+
+            NSLog("[MonoSync] play(album:) Apple Music 플레이리스트 \(songs.count)곡 직접 재생")
+            try await playSongsColdSafe(songs, startIndex: startIndex, startTime: startTime)
+            return songs.map(TrackSnapshot.init(song:))
+        }
+
         // 앨범 단위 일괄 해석(.with(.tracks) at 재생)을 사용하지 않습니다.
         // 모든 앨범/플레이리스트는 담는 시점에 album.tracks가 채워지므로, 친구 곡 경로와
         // 동일하게 트랙 단위로 재생합니다. 비어 있으면 그때만 한 번 로드합니다.
@@ -257,17 +283,56 @@ final class AppleMusicService: AppleMusicServicing {
         let trimmedTerm = term.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTerm.isEmpty else { return [] }
 
-        var searchRequest = MusicCatalogSearchRequest(term: trimmedTerm, types: [Album.self])
+        var searchRequest = MusicCatalogSearchRequest(term: trimmedTerm, types: [Album.self, Song.self])
         searchRequest.limit = 12
         let response = try await searchRequest.response()
 
-        // 검색 목록은 트랙 상세(.with(.tracks))가 필요 없습니다. 곡 수는 trackCount로 표시하고
-        // 실제 트랙은 재생 시점에 로드합니다. 이렇게 해야 검색이 멈추지 않습니다.
-        return response.albums.map { AlbumSnapshot(album: $0, trackCount: $0.trackCount) }
+        var finalAlbums: [Album] = Array(response.albums)
+        var seenIDs: Set<String> = Set(finalAlbums.map(\.id.rawValue))
+        
+        let topSongs = response.songs.prefix(5)
+        for song in topSongs {
+            do {
+                let songWithAlbums = try await song.with([.albums])
+                if let songAlbums = songWithAlbums.albums {
+                    for album in songAlbums {
+                        if !seenIDs.contains(album.id.rawValue) {
+                            finalAlbums.append(album)
+                            seenIDs.insert(album.id.rawValue)
+                        }
+                    }
+                }
+            } catch {
+                continue
+            }
+        }
+
+        return finalAlbums.prefix(15).map { AlbumSnapshot(album: $0, trackCount: $0.trackCount) }
+    }
+
+    func fetchArtist(name: String) async throws -> ArtistSnapshot {
+        try await ensureMusicAccess()
+        
+        var searchRequest = MusicCatalogSearchRequest(term: name, types: [Artist.self])
+        searchRequest.limit = 1
+        let response = try await searchRequest.response()
+        
+        guard let firstArtist = response.artists.first else {
+            throw AppleMusicPlaybackError.songNotFound
+        }
+        
+        let detailedArtist = try await firstArtist.with([.albums, .similarArtists])
+        return ArtistSnapshot(artist: detailedArtist)
     }
 
     func libraryPlaylists() async throws -> [MusicCollectionSnapshot] {
         try await ensureMusicAccess()
+
+        let mediaPlaylists = try await AppleMusicMediaLibraryLoader.playlists()
+        if !mediaPlaylists.isEmpty {
+            NSLog("[MonoSync] MediaPlayer 플레이리스트 \(mediaPlaylists.count)개 로드")
+            return mediaPlaylists
+        }
 
         // 라이브러리 요청은 메인 스레드를 붙잡으므로 반드시 메인 액터 밖에서 실행합니다.
         let items = try await Task.detached(priority: .userInitiated) { () -> [Playlist] in
@@ -287,28 +352,28 @@ final class AppleMusicService: AppleMusicServicing {
 
     func tracks(in playlist: MusicCollectionSnapshot) async throws -> [TrackSnapshot] {
         try await ensureMusicAccess()
-        let rawID = playlist.sourceID.replacingOccurrences(of: "applemusic-playlist:", with: "")
-
-        if let cached = cachedLibraryPlaylists[rawID] {
-            let songs = try await withMusicTimeout { () -> [Song] in
-                let loaded = try await cached.with(.tracks)
-                return loaded.tracks?.compactMap(\.songValue) ?? []
-            }
-            return songs.map(TrackSnapshot.init(song:))
+        if playlist.sourceID.hasPrefix("mediaplayer-playlist:") {
+            return try await AppleMusicMediaLibraryLoader.tracks(sourceID: playlist.sourceID)
         }
 
-        return try await AppleMusicLibraryTrackLoader.playlistTracks(sourceID: playlist.sourceID)
+        let songs = try await songsForLibraryPlaylist(sourceID: playlist.sourceID)
+        return songs.map(TrackSnapshot.init(song:))
     }
 
     func tracks(in album: AlbumSnapshot) async throws -> [TrackSnapshot] {
         if album.id.hasPrefix("monosync-playlist-album:") {
-            // 플레이리스트는 가져올 때 이미 곡이 해석되어 들어있습니다. 다시 조회하지 않습니다.
             if !album.tracks.isEmpty {
                 return album.tracks
             }
             try await ensureMusicAccess()
             let sourceID = album.id.replacingOccurrences(of: "monosync-playlist-album:", with: "")
-            let tracks = try await AppleMusicLibraryTrackLoader.playlistTracks(sourceID: sourceID)
+            if sourceID.hasPrefix("mediaplayer-playlist:") {
+                let tracks = try await AppleMusicMediaLibraryLoader.tracks(sourceID: sourceID)
+                return tracks.isEmpty ? album.tracks : tracks
+            }
+
+            let songs = try await songsForLibraryPlaylist(sourceID: sourceID)
+            let tracks = songs.map(TrackSnapshot.init(song:))
             return tracks.isEmpty ? album.tracks : tracks
         }
 
@@ -365,7 +430,20 @@ final class AppleMusicService: AppleMusicServicing {
             }
         }
         await primePlaybackSessionIfNeeded()
-        await primePlaybackSessionIfNeeded()
+    }
+
+    private func songsForLibraryPlaylist(sourceID: String) async throws -> [Song] {
+        let rawID = sourceID.replacingOccurrences(of: "applemusic-playlist:", with: "")
+        if let cached = cachedLibraryPlaylists[rawID] {
+            return try await withMusicTimeout(seconds: 10) { () -> [Song] in
+                let loaded = try await cached.with(.tracks)
+                return loaded.tracks?.compactMap(\.songValue) ?? []
+            }
+        }
+
+        return try await withMusicTimeout(seconds: 10) {
+            try await AppleMusicLibraryTrackLoader.playlistSongs(sourceID: sourceID)
+        }
     }
 
     private func resolveSong(for track: TrackSnapshot) async throws -> Song? {
@@ -447,6 +525,124 @@ private struct AppleMusicLibraryTrackLoader {
     }
 }
 
+private enum AppleMusicMediaLibraryLoader {
+    static func playlists() async throws -> [MusicCollectionSnapshot] {
+        try await ensureAuthorization()
+
+        let playlists = (MPMediaQuery.playlists().collections as? [MPMediaPlaylist]) ?? []
+        return playlists
+            .filter { !$0.items.isEmpty }
+            .prefix(30)
+            .map { playlist in
+                let representativeMusicItem = playlist.items.first(where: { $0.mediaType.contains(.music) })
+                    ?? playlist.representativeItem
+                let trackCount = playlist.items.filter { $0.mediaType.contains(.music) }.count
+                let firstTitle = representativeMusicItem?.title ?? "첫 곡"
+                let subtitle = trackCount > 1 ? "\(firstTitle) 외 \(trackCount - 1)곡" : firstTitle
+                return MusicCollectionSnapshot(
+                    id: "mediaplayer-playlist:\(playlist.persistentID)",
+                    sourceID: "mediaplayer-playlist:\(playlist.persistentID)",
+                    title: playlist.name ?? "Apple Music 플레이리스트",
+                    subtitle: subtitle,
+                    artworkURL: artworkURL(for: representativeMusicItem, cacheKey: "playlist-\(playlist.persistentID)")
+                )
+            }
+    }
+
+    static func tracks(sourceID: String) async throws -> [TrackSnapshot] {
+        try await ensureAuthorization()
+
+        let rawID = sourceID.replacingOccurrences(of: "mediaplayer-playlist:", with: "")
+        guard let persistentID = MPMediaEntityPersistentID(rawID) else { return [] }
+        let playlists = (MPMediaQuery.playlists().collections as? [MPMediaPlaylist]) ?? []
+        guard let playlist = playlists.first(where: { $0.persistentID == persistentID }) else { return [] }
+
+        return playlist.items.compactMap { item in
+            guard item.mediaType.contains(.music) else { return nil }
+            guard let title = item.title, !title.isEmpty else { return nil }
+            let storeID = item.playbackStoreID
+            let fallbackID = item.persistentID == 0 ? UUID().uuidString : "library:\(item.persistentID)"
+            let id = storeID.isEmpty ? fallbackID : "applemusic:\(storeID)"
+            return TrackSnapshot(
+                id: id,
+                title: title,
+                artistName: item.artist ?? "알 수 없는 아티스트",
+                albumTitle: item.albumTitle ?? "Apple Music",
+                artworkURL: artworkURL(for: item, cacheKey: "track-\(item.persistentID)"),
+                duration: item.playbackDuration > 0 ? item.playbackDuration : 1
+            )
+        }
+    }
+
+    private static func ensureAuthorization() async throws {
+        switch MPMediaLibrary.authorizationStatus() {
+        case .authorized:
+            return
+        case .notDetermined:
+            let status = await withCheckedContinuation { continuation in
+                MPMediaLibrary.requestAuthorization { continuation.resume(returning: $0) }
+            }
+            if status == .authorized {
+                return
+            }
+            throw AppleMusicPlaybackError.authorizationRequired
+        case .denied, .restricted:
+            throw AppleMusicPlaybackError.authorizationRequired
+        @unknown default:
+            throw AppleMusicPlaybackError.authorizationRequired
+        }
+    }
+
+    private static func artworkURL(for item: MPMediaItem?, cacheKey: String) -> URL? {
+        guard let image = item?.artwork?.image(at: CGSize(width: 600, height: 600)),
+              let data = image.squareCroppedPNGData()
+        else {
+            return nil
+        }
+
+        do {
+            let directory = try FileManager.default.url(
+                for: .cachesDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            .appendingPathComponent("MonoSyncArtwork", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let fileURL = directory.appendingPathComponent("\(cacheKey).png")
+            if !FileManager.default.fileExists(atPath: fileURL.path) {
+                try data.write(to: fileURL, options: .atomic)
+            }
+            return fileURL
+        } catch {
+            NSLog("[MonoSync] MediaPlayer artwork cache 실패: \(String(describing: error))")
+            return nil
+        }
+    }
+}
+
+private extension UIImage {
+    func squareCroppedPNGData() -> Data? {
+        let side = min(size.width, size.height)
+        guard side > 0 else { return pngData() }
+
+        let cropRect = CGRect(
+            x: (size.width - side) / 2,
+            y: (size.height - side) / 2,
+            width: side,
+            height: side
+        )
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format)
+        let image = renderer.image { _ in
+            draw(at: CGPoint(x: -cropRect.minX, y: -cropRect.minY))
+        }
+        return image.pngData()
+    }
+}
+
 private extension Track {
     var songValue: Song? {
         switch self {
@@ -486,14 +682,20 @@ private extension TrackSnapshot {
 
 private extension AlbumSnapshot {
     init(album: Album, trackCount: Int? = nil) {
+        let releaseYear = album.releaseDate.map { String(Calendar.current.component(.year, from: $0)) }
         self.init(
             id: "applemusic-album:\(album.id.rawValue)",
             title: album.title,
             artistName: album.artistName,
-            releaseYear: album.releaseDate.map { String(Calendar.current.component(.year, from: $0)) },
+            artistID: nil, // We rely on artistName for searching
+            releaseYear: releaseYear,
             artworkURL: album.artwork?.url(width: 800, height: 800),
             tracks: album.tracks?.compactMap(TrackSnapshot.init(track:)) ?? [],
-            trackCount: trackCount ?? album.tracks?.count
+            trackCount: trackCount ?? album.tracks?.count,
+            recordLabelName: album.recordLabelName,
+            editorialNotes: album.editorialNotes?.standard ?? album.editorialNotes?.short,
+            genreNames: !album.genreNames.isEmpty ? album.genreNames : nil,
+            isCompilation: album.isCompilation
         )
     }
 }
@@ -506,6 +708,19 @@ private extension MusicCollectionSnapshot {
             title: playlist.name,
             subtitle: playlist.curatorName ?? "내 Apple Music 플레이리스트",
             artworkURL: playlist.artwork?.url(width: 600, height: 600)
+        )
+    }
+}
+
+private extension ArtistSnapshot {
+    init(artist: Artist) {
+        self.init(
+            id: "applemusic-artist:\(artist.id.rawValue)",
+            name: artist.name,
+            artworkURL: artist.artwork?.url(width: 800, height: 800),
+            editorialNotes: artist.editorialNotes?.standard ?? artist.editorialNotes?.short,
+            albums: artist.albums?.compactMap { AlbumSnapshot(album: $0) } ?? [],
+            similarArtists: artist.similarArtists?.compactMap { ArtistSnapshot(artist: $0) } ?? []
         )
     }
 }
