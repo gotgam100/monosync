@@ -3,25 +3,76 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>개인정보 처리방침 - MonoSync</title>
+  <title>개인정보 처리방침 - monosync</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  </style>
 </head>
 <body class="bg-[#111111] text-gray-200 min-h-screen p-6 md:p-12">
-  <div class="max-w-2xl mx-auto">
+  <div class="max-w-3xl mx-auto">
     <a href="index.html" class="text-[#FF6A3D] hover:underline mb-8 inline-block">&larr; 홈으로 돌아가기</a>
-    <h1 class="text-3xl font-bold mb-6 text-white">개인정보 처리방침</h1>
-    <div class="prose prose-invert">
-      <p>본 개인정보 처리방침은 MonoSync 앱 서비스 이용 시 사용자의 개인정보를 어떻게 수집, 이용 및 보호하는지에 대해 설명합니다.</p>
-      <h2 class="text-xl font-semibold mt-6 mb-2">1. 수집하는 개인정보</h2>
-      <p>MonoSync는 다음과 같은 정보를 수집할 수 있습니다:</p>
-      <ul class="list-disc pl-5 mb-4">
-        <li>Apple ID 기반 로그인 정보 (이메일, 이름)</li>
-        <li>닉네임 및 사용자 식별자</li>
-        <li>음악 재생 기록 (실시간 스테이션 동기화 목적)</li>
-      </ul>
-      <h2 class="text-xl font-semibold mt-6 mb-2">2. 개인정보의 이용 목적</h2>
-      <p>수집된 정보는 서비스 제공, 친구 간의 실시간 음악 동기화, 그리고 고객 지원을 위해서만 사용됩니다.</p>
-      <!-- Add more details as needed -->
+    <h1 class="text-3xl font-bold mb-6 text-white">개인정보 처리방침 (Privacy Policy)</h1>
+    
+    <div class="space-y-6">
+      <p class="text-gray-300 leading-relaxed">
+        monosync(이하 '회사')는 사용자의 개인정보를 안전하게 보호하며, 이를 위해 최선을 다하고 있습니다. 
+        본 방침은 앱 이용 시 수집되는 개인정보의 종류와 목적, 보관 기간 등을 안내합니다.
+      </p>
+
+      <section class="space-y-3">
+        <h3 class="text-[#FF6A3D] font-bold text-lg">1. 수집하는 개인정보 항목</h3>
+        <ul class="list-disc list-inside text-gray-300 space-y-1 pl-2">
+          <li><strong>필수 수집 항목:</strong> Apple ID 기반 로그인 정보 (고유 식별자, 이메일, 이름), 사용자 닉네임.</li>
+          <li><strong>서비스 이용 데이터:</strong> Apple Music 재생 상태 (현재 듣고 있는 곡 정보, 재생 위치 등) 및 스테이션 정보.</li>
+          <li><strong>앱 내 결제 관련:</strong> 프리미엄 기능 결제 상태 및 일자 (결제 정보는 Apple에서 직접 관리하며 회사로 전송되지 않습니다).</li>
+          <li><strong>자동 수집 항목:</strong> 기기 식별 정보, OS 버전, 앱 오류 로그 (Firebase Crashlytics).</li>
+        </ul>
+      </section>
+
+      <section class="space-y-3">
+        <h3 class="text-[#FF6A3D] font-bold text-lg">2. 개인정보의 이용 목적</h3>
+        <ul class="list-disc list-inside text-gray-300 space-y-1 pl-2">
+          <li><strong>서비스 제공:</strong> 계정 관리, 스테이션 동기화, 친구와의 실시간 음악 재생 상태 공유.</li>
+          <li><strong>프리미엄 기능:</strong> 인앱 결제 상태 확인 및 커스텀 테이프 기능 제공.</li>
+          <li><strong>고객 지원 및 서비스 개선:</strong> 문의 응대, 앱 오류 진단 및 서비스 품질 향상.</li>
+        </ul>
+      </section>
+
+      <section class="space-y-3">
+        <h3 class="text-[#FF6A3D] font-bold text-lg">3. 개인정보의 보유 및 이용 기간</h3>
+        <p class="text-gray-300 leading-relaxed">원칙적으로 서비스 이용 종료(계정 탈퇴) 시 사용자의 개인정보는 지체 없이 파기됩니다.</p>
+        <ul class="list-disc list-inside text-gray-300 space-y-1 pl-2">
+          <li><strong>보유 항목:</strong> 프로필 정보, 친구 목록, 스테이션 데이터.</li>
+          <li><strong>보유 기간:</strong> 계정 삭제 요청 시 즉시 복구 불가능한 상태로 영구 삭제됩니다.</li>
+        </ul>
+        <p class="text-gray-300 leading-relaxed text-sm">단, 관련 법령에 의해 보존할 필요가 있는 경우 해당 법령에서 정한 기간 동안 보관됩니다.</p>
+      </section>
+
+      <section class="space-y-3">
+        <h3 class="text-[#FF6A3D] font-bold text-lg">4. 개인정보의 제3자 제공 및 위탁</h3>
+        <p class="text-gray-300 leading-relaxed">회사는 사용자의 개인정보를 외부에 제공하지 않습니다. 단, 서비스 제공을 위해 아래와 같이 업무를 위탁하고 있습니다.</p>
+        <ul class="list-disc list-inside text-gray-300 space-y-1 pl-2">
+          <li><strong>Google Firebase (Firestore & Auth):</strong> 사용자 데이터 저장 및 로그인 인증.</li>
+          <li><strong>Apple (App Store & Apple Music):</strong> 인앱 결제 처리 및 음악 스트리밍 데이터 제공 (Apple에서 직접 관리).</li>
+        </ul>
+      </section>
+
+      <section class="space-y-3">
+        <h3 class="text-[#FF6A3D] font-bold text-lg">5. 어린이의 개인정보 보호</h3>
+        <p class="text-gray-300 leading-relaxed">본 앱은 만 14세 미만 어린이의 개인정보를 고의로 수집하지 않습니다. 만약 수집된 사실을 인지할 경우 즉시 삭제 조치합니다.</p>
+      </section>
+
+      <section class="space-y-3">
+        <h3 class="text-[#FF6A3D] font-bold text-lg">6. 개인정보 보호 책임자 및 연락처</h3>
+        <ul class="list-disc list-inside text-gray-300 space-y-1 pl-2">
+          <li><strong>연락처:</strong> <a href="mailto:yogotgam@gmail.com" class="text-[#FF6A3D] underline hover:opacity-70">yogotgam@gmail.com</a></li>
+        </ul>
+      </section>
+
+      <div class="pt-4 border-t border-gray-700 mt-8">
+        <p class="text-sm text-gray-400">본 방침은 2026년 6월 14일부터 시행됩니다.</p>
+      </div>
     </div>
   </div>
 </body>
