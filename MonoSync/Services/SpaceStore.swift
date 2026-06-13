@@ -41,8 +41,26 @@ final class InMemorySpaceStore: SpaceStoring, @unchecked Sendable {
 }
 
 #if canImport(FirebaseFirestore)
+private final class ListenerBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var registrations: [ListenerRegistration] = []
+    
+    func add(_ registration: ListenerRegistration) {
+        lock.withLock {
+            registrations.append(registration)
+        }
+    }
+    
+    func remove() {
+        lock.withLock {
+            registrations.forEach { $0.remove() }
+            registrations.removeAll()
+        }
+    }
+}
+
 final class FirestoreSpaceStore: SpaceStoring, @unchecked Sendable {
-    private let db = Firestore.firestore()
+    private var db: Firestore { Firestore.firestore() }
 
     func publish(space: ListeningSpace, event: PlaybackEvent) async {
         var data: [String: Any] = [
@@ -88,17 +106,19 @@ final class FirestoreSpaceStore: SpaceStoring, @unchecked Sendable {
     func listenToSpaces(ownerIDs: [String]) -> AsyncStream<ListeningSpace> {
         AsyncStream { continuation in
             guard !ownerIDs.isEmpty else { continuation.finish(); return }
-            var listeners: [ListenerRegistration] = []
+            let box = ListenerBox()
             for id in ownerIDs {
                 let listener = db.collection("spaces").document(id)
                     .addSnapshotListener { snapshot, _ in
                         guard let data = snapshot?.data(),
-                              let space = ListeningSpace(documentID: id, data: data) else { return }
+                               let space = ListeningSpace(documentID: id, data: data) else { return }
                         continuation.yield(space)
                     }
-                listeners.append(listener)
+                box.add(listener)
             }
-            continuation.onTermination = { _ in listeners.forEach { $0.remove() } }
+            continuation.onTermination = { _ in
+                box.remove()
+            }
         }
     }
 

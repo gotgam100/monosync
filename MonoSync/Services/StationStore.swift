@@ -20,7 +20,7 @@ struct NoOpStationStore: StationStoring {
 
 #if canImport(FirebaseFirestore)
 final class FirestoreStationStore: StationStoring, @unchecked Sendable {
-    private let db = Firestore.firestore()
+    private var db: Firestore { Firestore.firestore() }
     
     func observeComments(spaceID: String) -> AsyncStream<[StationComment]> {
         AsyncStream { continuation in

@@ -36,10 +36,20 @@ struct AlbumInfoSheetView: View {
                             .multilineTextAlignment(.center)
                         
                         NavigationLink(destination: ArtistInfoView(artistName: album.artistName)) {
-                            Text(album.artistName)
-                                .font(MonoTheme.compactTitle)
-                                .foregroundStyle(MonoTheme.mist)
-                                .multilineTextAlignment(.center)
+                            HStack(spacing: 4) {
+                                Text(album.artistName)
+                                    .font(MonoTheme.compactTitle)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 10, weight: .bold))
+                            }
+                            .foregroundStyle(MonoTheme.mist)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.05))
+                            .clipShape(Capsule())
+                            .overlay(
+                                Capsule().stroke(Color.white.opacity(0.15), lineWidth: 1)
+                            )
                         }
                     }
                     .padding(.horizontal, 20)

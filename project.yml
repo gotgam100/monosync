@@ -6,42 +6,43 @@ options:
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
+
+packages:
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk
+    from: 12.14.0
+
 settings:
   base:
     DEVELOPMENT_LANGUAGE: ko
     MARKETING_VERSION: 0.1.0
     CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: 5.9
-    DEVELOPMENT_TEAM: SB2Z6HL579
     CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED: YES
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     STRING_CATALOG_GENERATE_SYMBOLS: YES
     ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: YES
     ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+
 targets:
   MonoSync:
     type: application
     platform: iOS
     sources:
       - path: MonoSync
-      - path: Font/Paperlogy-4Regular.ttf
+      - path: Shared
+      - path: Font
         buildPhase: resources
-      - path: Font/Paperlogy-5Medium.ttf
+      - path: image
         buildPhase: resources
-      - path: Font/Paperlogy-6SemiBold.ttf
+      - path: sound
         buildPhase: resources
-      - path: Font/Paperlogy-7Bold.ttf
-        buildPhase: resources
-      - path: Font/Cafe24PROSlimAir.ttf
-        buildPhase: resources
-      - path: image/tape_full.png
-        buildPhase: resources
-      - path: image/round.png
-        buildPhase: resources
-      - path: sound/Button_1_204715.wav
-        buildPhase: resources
-      - path: sound/INOUT_510085.wav
-        buildPhase: resources
+    dependencies:
+      - package: Firebase
+        product: FirebaseAuth
+      - package: Firebase
+        product: FirebaseFirestore
+      - target: MonoSyncWidget
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.baekmac.MonoSync
@@ -55,4 +56,25 @@ targets:
         SUPPORTS_MACCATALYST: NO
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
     scheme:
-      testTargets: []
+      run:
+        debugEnabled: false
+
+  MonoSyncWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: MonoSyncWidget
+      - path: Shared
+      - path: Font
+        buildPhase: resources
+      - path: image
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.baekmac.MonoSync.MonoSyncWidget
+        PRODUCT_NAME: MonoSyncWidget
+        INFOPLIST_FILE: MonoSyncWidget/Info.plist
+        CODE_SIGN_ENTITLEMENTS: MonoSyncWidget/Support/MonoSyncWidget.entitlements
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: 1
+        SKIP_INSTALL: YES

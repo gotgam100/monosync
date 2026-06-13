@@ -62,7 +62,7 @@ struct NoOpFriendStore: FriendStoring {
 import FirebaseFirestore
 
 final class FirestoreFriendStore: FriendStoring, @unchecked Sendable {
-    private let db = Firestore.firestore()
+    private var db: Firestore { Firestore.firestore() }
 
     func ensureProfile(uid: String, displayName: String, handle: String) async {
         try? await db.collection("users").document(uid).setData([

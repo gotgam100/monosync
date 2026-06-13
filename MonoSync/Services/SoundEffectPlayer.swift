@@ -8,11 +8,17 @@ final class SoundEffectPlayer {
     enum Effect {
         case button
         case insert
+        case rewind
+        case fastForward
+        case open
 
         var fileName: String {
             switch self {
             case .button: "Button_1_204715"
             case .insert: "INOUT_510085"
+            case .rewind: "RWD"
+            case .fastForward: "FWD"
+            case .open: "Open"
             }
         }
     }
@@ -32,9 +38,10 @@ final class SoundEffectPlayer {
         }
     }
 
-    func play(_ effect: Effect) {
+    @discardableResult
+    func play(_ effect: Effect) -> TimeInterval {
         guard let url = Bundle.main.url(forResource: effect.fileName, withExtension: "wav") else {
-            return
+            return 0
         }
 
         do {
@@ -52,8 +59,9 @@ final class SoundEffectPlayer {
                     self?.players[id] = nil
                 }
             }
+            return player.duration
         } catch {
-            return
+            return 0
         }
     }
 

@@ -1,0 +1,72 @@
+--- MonoSync/App/AppModel.swift
++++ MonoSync/App/AppModel.swift
+@@ -162,6 +162,7 @@
+ 
+         // 앱 시작 시 항상 일반 플레이어창으로 시작되게 설정
+         prefersDrawerGrid = false
++        updateWidgetState()
+     }
+ 
+     init(
+@@ -190,6 +191,7 @@
+         }
+         // 앱 시작 시 항상 일반 플레이어창으로 시작되게 설정
+         prefersDrawerGrid = false
++        updateWidgetState()
+     }
+ 
+     @MainActor
+@@ -212,6 +214,7 @@
+     func publish(_ event: PlaybackEvent) async {
+         mySpace.apply(event)
+         await spaceStore.publish(space: mySpace, event: event)
++        updateWidgetState()
+     }
+ 
+     @MainActor
+@@ -355,6 +358,7 @@
+         prefersDrawerGrid = false
+         appleMusicShelfStatusText = "\(album.title)을 \(side.title)에 넣었어요"
+         musicStatusText = "\(side.title) · \(album.title) 준비됨"
++        updateWidgetState()
+     }
+ 
+     /// 상단 영역에 서랍 그리드를 표시할지 여부.
+@@ -401,6 +405,7 @@
+         }
+         appleMusicShelfStatusText = "\((title ?? "앨범"))을 내 서랍에서 지웠어요"
+         musicStatusText = "내 서랍 정리됨"
++        updateWidgetState()
+     }
+ 
+     var selectedCassetteAlbum: AlbumSnapshot? {
+@@ -525,6 +530,7 @@
+             mySpace.updatedAt = .now
+             musicStatusText = "\(selectedCassetteSide.title)에 앨범이 없어요"
+         }
++        updateWidgetState()
+     }
+ 
+     @MainActor
+@@ -1628,4 +1634,21 @@
+             return lhs.updatedAt > rhs.updatedAt
+         }
+     }
++
++    @MainActor
++    func updateWidgetState() {
++        let track = mySpace.currentTrack
++        let isPlaying = isMusicPlaybackActive
++        let sideTitle = activeCassetteSide?.title
++        let tapeStyle = selectedTapeStyle.rawValue
++
++        WidgetStateHelper.update(
++            trackTitle: track?.title,
++            artistName: track?.artistName,
++            albumTitle: track?.albumTitle,
++            tapeStyle: tapeStyle,
++            isPlaying: isPlaying,
++            side: sideTitle
++        )
++    }
+ }

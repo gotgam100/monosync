@@ -162,6 +162,7 @@ final class AppModel {
 
         // 앱 시작 시 항상 일반 플레이어창으로 시작되게 설정
         prefersDrawerGrid = false
+        updateWidgetState()
     }
 
     init(
@@ -190,6 +191,7 @@ final class AppModel {
         }
         // 앱 시작 시 항상 일반 플레이어창으로 시작되게 설정
         prefersDrawerGrid = false
+        updateWidgetState()
     }
 
     @MainActor
@@ -212,6 +214,7 @@ final class AppModel {
     func publish(_ event: PlaybackEvent) async {
         mySpace.apply(event)
         await spaceStore.publish(space: mySpace, event: event)
+        updateWidgetState()
     }
 
     @MainActor
@@ -355,6 +358,7 @@ final class AppModel {
         prefersDrawerGrid = false
         appleMusicShelfStatusText = "\(album.title)을 \(side.title)에 넣었어요"
         musicStatusText = "\(side.title) · \(album.title) 준비됨"
+        updateWidgetState()
     }
 
     /// 상단 영역에 서랍 그리드를 표시할지 여부.
@@ -401,6 +405,7 @@ final class AppModel {
         }
         appleMusicShelfStatusText = "\((title ?? "앨범"))을 내 서랍에서 지웠어요"
         musicStatusText = "내 서랍 정리됨"
+        updateWidgetState()
     }
 
     var selectedCassetteAlbum: AlbumSnapshot? {
@@ -525,6 +530,7 @@ final class AppModel {
             mySpace.updatedAt = .now
             musicStatusText = "\(selectedCassetteSide.title)에 앨범이 없어요"
         }
+        updateWidgetState()
     }
 
     @MainActor
@@ -544,15 +550,31 @@ final class AppModel {
 
     @MainActor
     func pressPreviousButton() async {
+        let rwdDuration = SoundEffectPlayer.shared.play(.rewind)
+
         let wasPlaying = pressedCassetteButtons.contains(.play) && !pressedCassetteButtons.contains(.pause)
         let currentPosition = mySpace.currentPosition()
 
+        if wasPlaying {
+            await pauseCurrentTrack(at: currentPosition)
+        }
+
+        pressedCassetteButtons = [.previous]
+
+        if rwdDuration > 0 {
+            try? await Task.sleep(for: .seconds(rwdDuration))
+        }
+
+        if wasPlaying {
+            SoundEffectPlayer.shared.play(.button)
+            pressedCassetteButtons = [.play]
+        }
+
         if wasPlaying, currentPosition > 2 {
-            pressedCassetteButtons = [.previous]
             if let currentTrack = mySpace.currentTrack {
                 await playSelectedCassetteSide(startingAt: currentTrack, startTime: 0)
             }
-            pressedCassetteButtons = wasPlaying ? [.play] : []
+            pressedCassetteButtons = [.play]
             return
         }
 
@@ -629,7 +651,25 @@ final class AppModel {
 
     @MainActor
     func pressNextButton() async {
+        let fwdDuration = SoundEffectPlayer.shared.play(.fastForward)
+
         let wasPlaying = pressedCassetteButtons.contains(.play) && !pressedCassetteButtons.contains(.pause)
+        
+        if wasPlaying {
+            await pauseCurrentTrack(at: mySpace.currentPosition())
+        }
+
+        pressedCassetteButtons = [.next]
+        
+        if fwdDuration > 0 {
+            try? await Task.sleep(for: .seconds(fwdDuration))
+        }
+
+        if wasPlaying {
+            SoundEffectPlayer.shared.play(.button)
+            pressedCassetteButtons = [.play]
+        }
+
         let moved = await moveCassetteTrack(offset: 1, shouldPlay: wasPlaying)
         if moved {
             pressedCassetteButtons = wasPlaying ? [.play] : []
@@ -1627,5 +1667,23 @@ extension AppModel {
             if lhs.isLive != rhs.isLive { return lhs.isLive }
             return lhs.updatedAt > rhs.updatedAt
         }
+    }
+
+    @MainActor
+    func updateWidgetState() {
+        let track = mySpace.currentTrack
+        let isPlaying = isMusicPlaybackActive
+        let sideTitle = activeCassetteSide?.title
+        let tapeStyle = selectedTapeStyle.rawValue
+
+        WidgetStateHelper.update(
+            trackTitle: track?.title,
+            artistName: track?.artistName,
+            albumTitle: track?.albumTitle,
+            tapeStyle: tapeStyle,
+            isPlaying: isPlaying,
+            side: sideTitle,
+            artworkURL: track?.artworkURL?.absoluteString
+        )
     }
 }

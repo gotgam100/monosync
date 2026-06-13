@@ -422,12 +422,12 @@ private struct CassetteDeckView: View {
             let baseWidth: CGFloat = 370.0
             let scale = width / baseWidth
             
-            let transportButtons: [(label: String, action: () -> Void, isLatched: Bool)] = [
-                ("이전 곡", onBack, pressedButtons.contains(.previous)),
-                ("재생", onPlay, pressedButtons.contains(.play)),
-                ("일시정지", onPause, pressedButtons.contains(.pause)),
-                ("다음 곡", onNext, pressedButtons.contains(.next)),
-                ("정지", onStop, pressedButtons.contains(.stop)),
+            let transportButtons: [(label: String, action: () -> Void, isLatched: Bool, sound: SoundEffectPlayer.Effect)] = [
+                ("이전 곡", onBack, pressedButtons.contains(.previous), .button),
+                ("재생", onPlay, pressedButtons.contains(.play), .button),
+                ("일시정지", onPause, pressedButtons.contains(.pause), .button),
+                ("다음 곡", onNext, pressedButtons.contains(.next), .button),
+                ("정지", onStop, pressedButtons.contains(.stop), pressedButtons.isEmpty ? .open : .button),
             ]
 
             ZStack(alignment: .top) {
@@ -538,7 +538,8 @@ private struct CassetteDeckView: View {
                                 box: box,
                                 isLatched: button.isLatched,
                                 action: button.action,
-                                label: button.label
+                                label: button.label,
+                                soundEffect: button.sound
                             )
                         }
                     }
@@ -826,6 +827,7 @@ private struct CassetteButtonFace: View {
     let isLatched: Bool
     let action: () -> Void
     let label: String
+    let soundEffect: SoundEffectPlayer.Effect
 
     var body: some View {
         let s = stripWidth / CassetteButtonGeometry.imageWidthPx  // px → pt 스케일
@@ -836,7 +838,7 @@ private struct CassetteButtonFace: View {
 
         Button {
             CassetteFeedbackPlayer.shared.impact()
-            SoundEffectPlayer.shared.play(.button)
+            SoundEffectPlayer.shared.play(soundEffect)
             action()
         } label: {
             Rectangle()
